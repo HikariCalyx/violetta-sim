@@ -12,6 +12,9 @@ A WebAssembly (Rust) re-implementation of the *Lie Detector* mini-game.
 
 ```
 index.html                 Trunk entry point (builds the crate below)
+Trunk.toml                 Trunk build settings: the wasm-opt version it uses
+scripts/                   Checks for the build, run in CI
+    check-wasm-table.mjs   Guards the built wasm against a breaking wasm-opt
 Resources/                 Sprite artwork, baked into the binary at build time
     bg.jpg                 The title screen's background photograph
     sprite-pivots.txt      Image origins, one sprite per line
@@ -68,7 +71,11 @@ trunk serve --open
 ```
 
 Then edit any file and reload: `trunk serve` rebuilds on change.
-For a deployable bundle in `dist/`, run `trunk build --release`.
+For a deployable bundle in `dist/`, run `trunk build --release` — a release build
+is post-processed with wasm-opt, whose version `Trunk.toml` pins.
+`node scripts/check-wasm-table.mjs dist/*_bg.wasm` then re-runs the bundle's
+startup in Node and fails if that wasm-opt left it unable to start; the release
+build in CI does the same.
 
 ## Run natively (faster builds, handy for iterating)
 

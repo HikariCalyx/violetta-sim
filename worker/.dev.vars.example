@@ -1,0 +1,10 @@
+# Copy to `.dev.vars` (git-ignored) before running `wrangler dev`.
+# Production uses `npx wrangler secret put` instead — same names.
+#
+# Note: with `wrangler dev` the Worker listens on localhost, which Telegram cannot
+# reach. Either point the webhook at a tunnel, or POST updates at it yourself:
+#   curl -X POST http://127.0.0.1:8787/telegram/webhook \
+#     -H "X-Telegram-Bot-Api-Secret-Token: <WEBHOOK_SECRET>" \
+#     -H "content-type: application/json" -d @update.json
+BOT_TOKEN="123456789:AAExampleTokenFromBotFather"
+WEBHOOK_SECRET="replace-with-a-long-random-string"

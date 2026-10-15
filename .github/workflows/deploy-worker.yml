@@ -1,0 +1,131 @@
+# Builds the game bundle and deploys the Telegram verification Worker.
+#
+# The Worker serves `dist/` itself (wrangler.jsonc → assets.directory = ../dist),
+# so the bundle has to be built in the same run: the deployed page and the API
+# must come from one commit.
+#
+# One-time setup, in the repository: Settings → Secrets and variables → Actions
+#   CLOUDFLARE_API_TOKEN   create one from the "Edit Cloudflare Workers" template
+#                          (it covers Workers Scripts and Workers Routes, which is
+#                          what a custom domain needs)
+#   CLOUDFLARE_ACCOUNT_ID  the account id, from the Cloudflare dashboard sidebar
+#
+# The bot secrets are deliberately NOT deployed from here. Worker secrets survive
+# a deploy, so they are set once:
+#   dashboard → Workers → violetta-verifier → Settings → Variables and Secrets
+#   (or `npx wrangler secret put BOT_TOKEN` from a machine with Node >= 22)
+#     BOT_TOKEN, WEBHOOK_SECRET
+# The webhook itself is also a one-off: see worker/README.md step 5.
+
+name: Deploy the verification Worker
+
+on:
+  push:
+    branches: [main, ghpages-src]
+    # The Worker ships the site, so anything that changes the bundle has to
+    # trigger a deploy — not just `worker/` itself.
+    paths:
+      - "worker/**"
+      - "violetta_lie_detector_sim/**"
+      - "Resources/**"
+      - "scripts/**"
+      - "index.html"
+      - "Trunk.toml"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+# The page and the API are published together, so a cancelled run would leave the
+# two halves of one commit mismatched. Queue instead of cancelling.
+concurrency:
+  group: worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Matches the Trunk the project is developed against, and the cache key below.
+  TRUNK_VERSION: "0.16.0"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail with the setup instructions instead of a bare authentication error.
+      - name: Check the Cloudflare credentials are set
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || missing="${missing} CLOUDFLARE_API_TOKEN"
+          [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || missing="${missing} CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):${missing} — see the header of this workflow."
+            exit 1
+          fi
+          echo "Both Cloudflare secrets are present."
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Trunk downloads the wasm-bindgen CLI matching the build and wasm-opt for
+      # the release build (pinned in Trunk.toml); keyed on both so only a change
+      # to either pays for the downloads again.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/trunk
+          key: trunk-tools-${{ runner.os }}-${{ hashFiles('Trunk.toml', 'violetta_lie_detector_sim/Cargo.lock') }}
+          restore-keys: trunk-tools-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        id: trunk
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ runner.os }}-${{ env.TRUNK_VERSION }}
+
+      - name: Install Trunk
+        if: steps.trunk.outputs.cache-hit != 'true'
+        run: cargo install --locked trunk --version "$TRUNK_VERSION"
+
+      # wrangler refuses to run on Node < 22, which is also why this deploy is not
+      # meant to be done from a developer machine that has an older Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Build the game bundle
+        # No --public-url here, unlike the Pages workflow: this Worker serves the
+        # bundle from its own domain ROOT, and `/` is Trunk's default base path.
+        run: trunk build --release
+
+      # A wasm-opt that does not suit wasm-bindgen's externref table produces a
+      # bundle that stands still on its loading screen — and it would be picked up
+      # by the Worker's asset binding exactly like by Pages. Run the startup here.
+      - name: Check the built wasm starts
+        run: node scripts/check-wasm-table.mjs dist/*_bg.wasm
+
+      - name: Install the Worker's dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Typecheck the Worker
+        working-directory: worker
+        run: npx tsc --noEmit
+
+      - name: Deploy
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Run from `worker/`: that is where wrangler.jsonc lives, and `main` and the
+        # assets directory (`../dist`) are resolved relative to it.
+        run: npx wrangler deploy
