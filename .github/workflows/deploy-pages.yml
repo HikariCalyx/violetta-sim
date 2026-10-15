@@ -1,0 +1,104 @@
+# Builds the wasm bundle with Trunk and publishes `dist/` to GitHub Pages.
+#
+# The site is a *project* page, so it is served from
+# https://<owner>.github.io/<repo>/ — not from a domain root. That base path is
+# handed to the build (see the Build step), and Trunk writes it into the
+# `<base data-trunk-public-url>` tag of index.html, so every asset the bundle
+# asks for is fetched from under it.
+#
+# One-time setup, in the repository: Settings → Pages → Build and deployment →
+# Source = "GitHub Actions". (The `enablement` input below asks for that
+# automatically; if the repository's token cannot do it, set it by hand.)
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    # `ghpages-src` is the branch this was set up on; trim the list to whichever
+    # branch the site should be published from.
+    branches: [main, ghpages-src]
+  workflow_dispatch:
+
+# One deployment at a time. A queued run waits rather than cancelling, so a push
+# is never left half published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  # The Trunk the workflow installs, and the version the caches below are keyed
+  # on. It matches what the project is developed against.
+  TRUNK_VERSION: "0.16.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # The crate is built for the browser only; no native target is needed.
+          targets: wasm32-unknown-unknown
+
+      # Keeps the cargo registry and the wasm build directory between runs, so a
+      # run that only touches a source file relinks instead of rebuilding every
+      # dependency.
+      - uses: Swatinem/rust-cache@v2
+
+      # Trunk downloads the wasm-bindgen CLI that matches the build, and (in
+      # release builds) wasm-opt. Its own cache is keyed on the lockfile, so only
+      # a dependency change pays for that download again.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/trunk
+          key: trunk-tools-${{ runner.os }}-${{ hashFiles('violetta_lie_detector_sim/Cargo.lock') }}
+          restore-keys: trunk-tools-${{ runner.os }}-
+
+      # Trunk is not on the runner, so it is built from source once and then kept
+      # as a binary: caching the installed binary is quicker than compiling it on
+      # every run, and it needs nothing from outside crates.io.
+      - uses: actions/cache@v4
+        id: trunk
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ runner.os }}-${{ env.TRUNK_VERSION }}
+
+      - name: Install Trunk
+        if: steps.trunk.outputs.cache-hit != 'true'
+        run: cargo install --locked trunk --version "$TRUNK_VERSION"
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        with:
+          # Ask for Pages to be switched on with the Actions source if it is not
+          # on yet, so the first push publishes without a settings detour.
+          enablement: true
+
+      - name: Build
+        # `base_path` is the `/violetta-sim` of the published URL, which is what
+        # makes the bundle load its assets from the right place.
+        run: trunk build --release --public-url "${{ steps.pages.outputs.base_path }}/"
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
