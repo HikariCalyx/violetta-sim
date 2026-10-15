@@ -52,13 +52,14 @@ jobs:
       # dependency.
       - uses: Swatinem/rust-cache@v2
 
-      # Trunk downloads the wasm-bindgen CLI that matches the build, and (in
-      # release builds) wasm-opt. Its own cache is keyed on the lockfile, so only
-      # a dependency change pays for that download again.
+      # Trunk downloads the wasm-bindgen CLI that matches the build, and
+      # wasm-opt for the release build (its version is pinned in Trunk.toml). Its
+      # own cache is keyed on both, so only a change to either pays for the
+      # downloads again.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/trunk
-          key: trunk-tools-${{ runner.os }}-${{ hashFiles('violetta_lie_detector_sim/Cargo.lock') }}
+          key: trunk-tools-${{ runner.os }}-${{ hashFiles('Trunk.toml', 'violetta_lie_detector_sim/Cargo.lock') }}
           restore-keys: trunk-tools-${{ runner.os }}-
 
       # Trunk is not on the runner, so it is built from source once and then kept
@@ -86,6 +87,13 @@ jobs:
         # `base_path` is the `/violetta-sim` of the published URL, which is what
         # makes the bundle load its assets from the right place.
         run: trunk build --release --public-url "${{ steps.pages.outputs.base_path }}/"
+
+      # A wasm-opt that does not suit wasm-bindgen's externref table produces a
+      # bundle that stands still on its loading screen with only a cryptic error
+      # in the console (which is how the first deploy of this site went). This is
+      # that startup, run here, so a broken bundle never reaches Pages.
+      - name: Check the built wasm starts
+        run: node scripts/check-wasm-table.mjs dist/*_bg.wasm
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3
