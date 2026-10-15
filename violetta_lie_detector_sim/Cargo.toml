@@ -1,0 +1,38 @@
+[package]
+name = "violetta_lie_detector_sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36"
+egui = "0.36"
+# Only the two decoders the artwork needs are enabled, so the default (all codecs)
+# is turned off: the sprites are PNGs and the title screen's photograph is a JPEG.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+log = "0.4"
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+] }
+# eframe's `wgpu` feature is built with wgpu's default features disabled, so no
+# wasm backend is compiled in. Enabling `webgl` adds the WebGL2 backend, which
+# every browser has, and leaves WebGPU as the preferred backend where available.
+wgpu = { version = "30", default-features = false, features = ["webgl"] }
+
+[profile.release]
+opt-level = 2 # fast and small wasm
+
+# Optimize dependencies even in debug builds, otherwise a wasm dev build is too
+# slow to be usable.
+[profile.dev.package."*"]
+opt-level = 2
