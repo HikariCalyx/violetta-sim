@@ -3,13 +3,15 @@ import { dispatch } from './gating';
 import { ChatRegistry } from './registry';
 import { VerificationSession } from './session';
 import type { TgUpdate } from './telegram';
+import { escapeHtml } from './telegram';
 import { UserIndex } from './user-index';
 
 // Durable Object classes have to be exported from the Worker's entry point.
 export { ChatRegistry, UserIndex, VerificationSession };
 
-const SESSION_API =
-  /^\/api\/session\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(state|pick)$/;
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const SESSION_API = new RegExp(`^/api/session/(${UUID})/(state|pick)$`);
+const SESSION_ID = new RegExp(`^${UUID}$`);
 
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), {
@@ -24,7 +26,7 @@ export default {
     // Everything that exists in `dist/` (the game, its wasm and js) is served by the asset
     // binding before the Worker runs; only the paths below reach this code.
     if (url.pathname === '/telegram/webhook') return handleWebhook(request, env, ctx);
-    if (url.pathname === '/telegram' && request.method === 'GET') return serveGame(request, env);
+    if (url.pathname === '/telegram' && request.method === 'GET') return serveGame(request, env, url);
     if (url.pathname === '/api/health') return json(health(env));
 
     const match = SESSION_API.exec(url.pathname);
@@ -53,8 +55,9 @@ async function handleWebhook(
   let update: TgUpdate;
   try {
     update = (await request.json()) as TgUpdate;
-  } catch {
-    return new Response('Bad request', { status: 400 });
+  } catch (err) {
+    console.error('webhook body was not JSON', err instanceof Error ? err.message : err);
+    return new Response('Bad request: body is not valid JSON', { status: 400 });
   }
   if (!update || typeof update !== 'object') return new Response('Bad request', { status: 400 });
 
@@ -64,10 +67,64 @@ async function handleWebhook(
   return new Response('ok');
 }
 
-/** `?session=` is appended by the client; the bundle is the same file as `/`. */
-async function serveGame(request: Request, env: Env): Promise<Response> {
-  const indexUrl = new URL('/index.html', request.url).toString();
-  return env.ASSETS.fetch(indexUrl);
+/**
+ * `/telegram` is a verification page, so a link without a live session must never reach the
+ * game. `/` stays the public demo: it carries no session and therefore can never unmute anyone.
+ */
+async function serveGame(request: Request, env: Env, url: URL): Promise<Response> {
+  const sessionId = url.searchParams.get('session') ?? '';
+  if (!SESSION_ID.test(sessionId)) {
+    return invalidSession('This link has no session id, or it is malformed.', 400);
+  }
+
+  const snapshot = await env.SESSION.get(env.SESSION.idFromName(sessionId)).snapshot();
+  if (!snapshot) {
+    return invalidSession('Unknown session. Send /start to the bot to get a fresh link.', 404);
+  }
+  // Closed sessions keep their outcome (that is how the page shows "you were removed"), but
+  // they must not start a new game.
+  if (snapshot.status !== 'open') {
+    return invalidSession(
+      `This verification already ended (${snapshot.status}). Send /start to the bot if you need to be verified again.`,
+      410,
+    );
+  }
+
+  return env.ASSETS.fetch(new URL('/index.html', request.url).toString());
+}
+
+/**
+ * Rendered here rather than shipped as an asset, because the reason differs per case and it has
+ * to look like the game's own dark page — a member in Telegram's in-app browser should not be
+ * left staring at a blank screen. The status codes are honest (400/404/410); browsers render
+ * this body either way.
+ */
+function invalidSession(detail: string, status: number): Response {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invalid Session</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #1b1b1f; color: #f0f0f0;
+    font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
+  main { max-width: 32rem; padding: 1.5rem; text-align: center; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.75rem; }
+  p { margin: 0; line-height: 1.5; color: #c9c9d1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Invalid Session</h1>
+  <p>${escapeHtml(detail)}</p>
+</main>
+</body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+  });
 }
 
 async function handleSessionApi(
@@ -101,7 +158,15 @@ async function handleSessionApi(
   if (!isRoundIndex(roundIndex) || !isSlot(slot) || !Number.isFinite(elapsedMs)) {
     return json({ error: 'bad-request' }, 400);
   }
-  return json(await session.pick(roundIndex, slot, elapsedMs));
+
+  const result = await session.pick(roundIndex, slot, elapsedMs);
+  if (!result.ok) {
+    // Mirrors the page gate: a session that never existed is 404, one that already ended is
+    // 410, and clicking out of turn is a conflict.
+    const status = result.reason === 'unknown-session' ? 404 : result.reason === 'closed' ? 410 : 409;
+    return json(result, status);
+  }
+  return json(result);
 }
 
 const isRoundIndex = (n: number) => Number.isInteger(n) && n >= 0 && n < 4;

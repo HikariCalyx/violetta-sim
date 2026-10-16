@@ -59,6 +59,42 @@ export interface SessionState {
 const KEY = 'state';
 
 /**
+ * How long a closed session stays readable. The link is dead either way — the page refuses
+ * anything that is not `open` — but keeping the record for a day lets it say *why* it ended
+ * ("already ended (expired)") instead of a bare "unknown session". After that the alarm
+ * below wipes it, so completed verifications do not accumulate in storage forever.
+ */
+const CLOSED_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** The public view the game page reads. No secrets — the shuffle is visible on screen anyway. */
+export interface SessionSnapshot {
+  sessionId: string;
+  status: SessionStatus;
+  serverNow: number;
+  /** Earliest kick, across the chats this verification still covers. */
+  deadline: number | null;
+  attempts: number;
+  attemptsLeft: number;
+  chats: { title: string; state: ChatEntryState }[];
+  /** `rounds[i][character] = slot`, so the page can animate what the server scored. */
+  rounds: number[][];
+  special: number;
+  roundIndex: number;
+}
+
+/** What `pick` reports back. A closed session is not an error the page should retry. */
+export type PickResult =
+  | { ok: false; reason: 'unknown-session' | 'closed' | 'out-of-order'; status?: SessionStatus }
+  | {
+      ok: true;
+      correct: boolean;
+      status: SessionStatus;
+      attempts?: number;
+      attemptsLeft: number;
+      roundIndex?: number;
+    };
+
+/**
  * One verification, covering every protected chat the member has joined.
  *
  * All of it lives in this single object on purpose: the countdown alarm, the join
@@ -134,7 +170,7 @@ export class VerificationSession extends DurableObject<Env> {
   }
 
   /** The public view the game page reads. No secrets — the shuffle is visible on screen anyway. */
-  async snapshot(): Promise<Record<string, unknown> | null> {
+  async snapshot(): Promise<SessionSnapshot | null> {
     const s = await this.read();
     if (!s) return null;
     const restricted = Object.values(s.chats).filter((chat) => chat.state === 'restricted');
@@ -142,7 +178,6 @@ export class VerificationSession extends DurableObject<Env> {
       sessionId: s.sessionId,
       status: s.status,
       serverNow: Date.now(),
-      /** Earliest kick, across the chats this verification still covers. */
       deadline: restricted.length ? Math.min(...restricted.map((chat) => chat.deadline)) : null,
       attempts: s.attempts,
       attemptsLeft: Math.max(0, MAX_ATTEMPTS - s.attempts),
@@ -158,7 +193,7 @@ export class VerificationSession extends DurableObject<Env> {
     roundIndex: number,
     slot: number,
     elapsedMs: number,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<PickResult> {
     const s = await this.read();
     if (!s) return { ok: false, reason: 'unknown-session' };
     if (s.status !== 'open') return { ok: false, reason: 'closed', status: s.status };
@@ -212,10 +247,15 @@ export class VerificationSession extends DurableObject<Env> {
   /**
    * A DO has exactly one alarm, so it is armed at the EARLIEST outstanding deadline and
    * re-armed on every fire — otherwise the second chat's deadline would never arrive.
+   * Once the session is closed the same alarm is reused as the retention reaper.
    */
   async alarm(): Promise<void> {
     const s = await this.read();
-    if (!s || s.status !== 'open') return;
+    if (!s) return;
+    if (s.status !== 'open') {
+      await this.ctx.storage.deleteAll();
+      return;
+    }
 
     const now = Date.now();
     for (const entry of Object.values(s.chats)) {
@@ -256,6 +296,9 @@ export class VerificationSession extends DurableObject<Env> {
     await this.env.USER_INDEX.get(
       this.env.USER_INDEX.idFromName(userIndexName(s.userId)),
     ).finish(s.sessionId);
+    // Arm the reaper. The id can never be played again in the meantime: the page only serves
+    // a game for `open` sessions.
+    await this.ctx.storage.setAlarm(Date.now() + CLOSED_RETENTION_MS);
   }
 
   /** Success: lift the restriction everywhere it is still in force. */

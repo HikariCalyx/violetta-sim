@@ -28,10 +28,11 @@ attempt counter is shared — one game, three tries.
 
 1. Create the bot with @BotFather and copy its token.
 2. `cd worker && npm install`
-3. Register the secrets (they must never land in `wrangler.jsonc`):
+3. Register the secrets (they must never land in `wrangler.jsonc`). **The GitHub Actions
+   workflow does this for you** — see below — so this is only for a hand deploy:
    ```sh
    npx wrangler secret put BOT_TOKEN
-   npx wrangler secret put WEBHOOK_SECRET   # any long random string
+   npx wrangler secret put WEBHOOK_SECRET   # any random string, 1-256 chars of A-Za-z0-9_-
    ```
 4. Deploy. The assets binding needs the game built first — `dist/` is git-ignored. Push
    and let the workflow do it (below), or run it by hand from a machine with Node >= 22,
@@ -40,7 +41,8 @@ attempt counter is shared — one game, three tries.
    (cd .. && trunk build --release) && npx wrangler deploy
    ```
 5. Point Telegram at the Worker. `allowed_updates` matters: `chat_member` is **not**
-   delivered unless it is named here.
+   delivered unless it is named here. The workflow does this after every deploy too, in
+   which case this is the hand-deploy equivalent:
    ```sh
    curl -sS "https://api.telegram.org/bot<TOKEN>/setWebhook" \
      -H 'content-type: application/json' \
@@ -67,11 +69,18 @@ the wasm bundle, checks its startup, typechecks the Worker and deploys — on ev
 | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | an API token from the "Edit Cloudflare Workers" template (covers Workers Scripts and Workers Routes, which a custom domain needs) |
 | `CLOUDFLARE_ACCOUNT_ID` | the account id in the Cloudflare dashboard sidebar |
+| `BOT_TOKEN` | @BotFather |
+| `WEBHOOK_SECRET` | any random string, 1-256 characters of `A-Za-z0-9_-` |
 
-`BOT_TOKEN` and `WEBHOOK_SECRET` are deliberately **not** in the workflow: Worker secrets
-survive a deploy, so they are set once — dashboard → Workers → violetta →
-Settings → Variables and Secrets, or `npx wrangler secret put`. Registering the webhook
-(step 5) is a one-off as well, and does not need to be repeated per deploy.
+After the deploy the workflow pushes `BOT_TOKEN` and `WEBHOOK_SECRET` onto the Worker with
+`wrangler secret put`, cross-checks the deployed configuration through `/api/health` (it
+fails if a secret did not land, or if the workflow's `VERIFY_ORIGIN` disagrees with
+`wrangler.jsonc`), and then registers the webhook — so nothing has to be set by hand. Both
+are idempotent, but note that one bot can only have one webhook: a second Worker deployed
+for the same bot would take it over.
+
+`BOT_TOKEN` and `WEBHOOK_SECRET` are scoped to those three steps rather than the whole job,
+so they never enter the environment of `npm ci` and its install scripts.
 
 The workflow and the Pages one both build the bundle, with different base paths (`/` here,
 `/violetta-sim/` on Pages): they are independent deployments of the same game.

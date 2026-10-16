@@ -9,13 +9,15 @@
 #                          (it covers Workers Scripts and Workers Routes, which is
 #                          what a custom domain needs)
 #   CLOUDFLARE_ACCOUNT_ID  the account id, from the Cloudflare dashboard sidebar
+#   BOT_TOKEN              from @BotFather
+#   WEBHOOK_SECRET         any random string, 1-256 characters of A-Za-z0-9_- (that
+#                          charset is Telegram's own rule for a webhook secret token)
 #
-# The bot secrets are deliberately NOT deployed from here. Worker secrets survive
-# a deploy, so they are set once:
-#   dashboard → Workers → violetta → Settings → Variables and Secrets
-#   (or `npx wrangler secret put BOT_TOKEN` from a machine with Node >= 22)
-#     BOT_TOKEN, WEBHOOK_SECRET
-# The webhook itself is also a one-off: see worker/README.md step 5.
+# After the deploy this workflow pushes BOT_TOKEN and WEBHOOK_SECRET onto the Worker,
+# checks the deployed configuration, then registers the webhook. All of it is
+# idempotent, so the repository stays the single source of truth for what the Worker
+# holds. One bot can only have one webhook, though, so a second Worker deployed for
+# the same bot would take it over.
 
 name: Deploy the verification Worker
 
@@ -48,27 +50,38 @@ permissions:
 env:
   # Matches the Trunk the project is developed against, and the cache key below.
   TRUNK_VERSION: "0.16.0"
+  # The Worker's public origin. The webhook is registered against this, while the links the
+  # bot sends come from VERIFY_ORIGIN in worker/wrangler.jsonc — the deploy checks the two
+  # agree, so they cannot drift apart silently.
+  VERIFY_ORIGIN: "https://violetta.trill.workers.dev"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Several steps need the Cloudflare credentials. The bot secrets deliberately stay
+    # step-scoped so they are not in the environment of `npm ci` and its install scripts.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
 
       # Fail with the setup instructions instead of a bare authentication error.
-      - name: Check the Cloudflare credentials are set
+      - name: Check the secrets are set
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
           missing=""
           [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || missing="${missing} CLOUDFLARE_API_TOKEN"
           [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || missing="${missing} CLOUDFLARE_ACCOUNT_ID"
+          [ -n "${BOT_TOKEN:-}" ] || missing="${missing} BOT_TOKEN"
+          [ -n "${WEBHOOK_SECRET:-}" ] || missing="${missing} WEBHOOK_SECRET"
           if [ -n "$missing" ]; then
             echo "::error::Missing repository secret(s):${missing} — see the header of this workflow."
             exit 1
           fi
-          echo "Both Cloudflare secrets are present."
+          echo "All four repository secrets are present."
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -125,9 +138,55 @@ jobs:
 
       - name: Deploy
         working-directory: worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         # Run from `worker/`: that is where wrangler.jsonc lives, and `main` and the
         # assets directory (`../dist`) are resolved relative to it.
         run: npx wrangler deploy
+
+      # Pushed rather than set by hand, so the repo stays the source of truth. `printf` and
+      # not `echo`: a trailing newline would turn every API URL into
+      # /bot123:AA\n/sendMessage, which fails with a 404 that looks like a wrong token.
+      - name: Push the bot secrets onto the Worker
+        working-directory: worker
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: |
+          printf '%s' "$BOT_TOKEN" | npx wrangler secret put BOT_TOKEN
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put WEBHOOK_SECRET
+
+      # The Worker reports what it actually holds: booleans for the secrets, and the two
+      # public values verbatim. This catches a secret that did not land, and an origin that
+      # no longer matches worker/wrangler.jsonc — before the webhook is pointed at it.
+      - name: Check the deployed configuration
+        run: |
+          health=$(curl -fsS "$VERIFY_ORIGIN/api/health")
+          echo "$health"
+          echo "$health" | jq -e '.config.botToken and .config.webhookSecret' > /dev/null \
+            || { echo "::error::The Worker reports a missing BOT_TOKEN or WEBHOOK_SECRET."; exit 1; }
+          echo "$health" | jq -e --arg origin "$VERIFY_ORIGIN" '.config.verifyOrigin == $origin' > /dev/null \
+            || { echo "::error::$VERIFY_ORIGIN and VERIFY_ORIGIN in worker/wrangler.jsonc disagree."; exit 1; }
+
+      - name: Register the webhook
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: |
+          # Built with jq so the secret can hold any character without breaking the JSON.
+          jq -n --arg url "$VERIFY_ORIGIN/telegram/webhook" --arg secret "$WEBHOOK_SECRET" \
+            '{url: $url, secret_token: $secret, allowed_updates: ["message", "chat_member", "my_chat_member"]}' \
+            > "$RUNNER_TEMP/webhook.json"
+          response=$(curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+            -H 'content-type: application/json' --data-binary "@$RUNNER_TEMP/webhook.json")
+          echo "$response"
+          # Telegram answers 200 even when it refuses, so check the body, not the status.
+          echo "$response" | jq -e '.ok == true' > /dev/null \
+            || { echo "::error::setWebhook failed — see the response above."; exit 1; }
+
+      # Printed, not asserted: `last_error_message` only clears once a delivery succeeds, so
+      # a stale error here is not a failure of this run.
+      - name: Report the webhook Telegram recorded
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" \
+            | jq '{url: .result.url, pending: .result.pending_update_count, last_error: .result.last_error_message, allowed_updates: .result.allowed_updates}'
