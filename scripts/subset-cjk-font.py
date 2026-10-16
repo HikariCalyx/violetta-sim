@@ -7,8 +7,9 @@ keeps only the glyphs each language actually uses — tens of KB per language, a
 the language's own glyph forms with it, since each Noto Sans CJK covers its own
 language's characters.
 
-The strings are read from `src/language.rs` — the app's name and the words it
-writes itself — so run this from the repository root whenever one of them changes:
+The strings are read from `src/language.rs` — the app's name, the words the screens
+write, and the chrome the bot's verification adds — so run this from the repository
+root whenever one of them changes:
 
     py scripts/subset-cjk-font.py
 
@@ -40,20 +41,22 @@ SOURCES = {"cn": "NotoSansSC", "tw": "NotoSansTC", "jp": "NotoSansJP", "kr": "No
 
 
 def localised_strings():
-    """Every language's text: its name, and then the words its screens use.
+    """Every string each language spells out in the language module.
 
-    The two tables this reads are one language to a line, which is what makes this
-    parsing easy to keep honest — `language::title` and `language::words`.
+    Both tables there are a `match` on the language code: the app's name, and then
+    the words the screens write — the buttons, the outcomes, and the chrome the
+    bot's verification adds. So this reads from each `Some("xx") =>` up to the next
+    arm and takes every literal in between, which covers a one-string row as well as
+    a thirteen-field one.
     """
     source = open(LANGUAGE_RS, encoding="utf-8").read()
     strings = {}
 
-    for language, name in re.findall(r'Some\("(\w\w)"\) => "([^"]+)",', source):
-        strings[language] = name
-
-    for language, arguments in re.findall(r'Some\("(\w\w)"\) => Words::new\(([^)]*)\),', source):
-        for word in re.findall(r'"([^"]*)"', arguments):
-            strings[language] = strings.get(language, "") + word
+    arms = re.finditer(r'Some\("(\w\w)"\) =>(?P<body>.*?)(?=Some\("|_ =>|\Z)', source, re.S)
+    for arm in arms:
+        language = arm.group(1)
+        text = "".join(re.findall(r'"([^"]*)"', arm.group("body")))
+        strings[language] = strings.get(language, "") + text
 
     if not strings:
         raise SystemExit(f"found no localised strings in {LANGUAGE_RS}")

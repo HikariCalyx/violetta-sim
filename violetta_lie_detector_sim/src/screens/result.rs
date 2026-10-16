@@ -22,9 +22,6 @@ const GREY: Color32 = Color32::from_gray(0xc9);
 /// again, and once it has removed them there is no game to restart. The button
 /// replays with the shuffle the Worker sent for the next attempt, which arrives
 /// with the report that ended the last one.
-///
-/// Only the two outcomes the simulator itself reports — *Success* and *Failed* —
-/// are in `language::words`; the rest belong to the bot, and are English.
 pub fn show(
     ui: &mut Ui,
     outcome: Outcome,
@@ -34,33 +31,15 @@ pub fn show(
     let tries_left = verification
         .and_then(|verification| verification.snapshot())
         .map(|snapshot| snapshot.attempts_left);
-    let tries = tries_left.map(|left| match left {
-        1 => "1 try left.".to_owned(),
-        count => format!("{count} tries left."),
-    });
+    let tries = tries_left.map(|left| words.tries_left(left));
 
     let (headline, detail, colour, retry) = match (outcome, tries_left) {
         // No session: the public simulator, which can always be played again.
         (Outcome::Success, None) => (words.success, None, GOLD, true),
         (Outcome::Failure, None) => (words.failed, None, RED, true),
-        (Outcome::Success, Some(_)) => (
-            "Verified",
-            Some("You can talk in the group now."),
-            GOLD,
-            false,
-        ),
-        (Outcome::Expired, _) => (
-            "Time is up",
-            Some("You were removed from the group. You can rejoin and try again."),
-            RED,
-            false,
-        ),
-        (Outcome::Failure, Some(0)) => (
-            "Out of tries",
-            Some("You were removed from the group. You can rejoin and try again."),
-            RED,
-            false,
-        ),
+        (Outcome::Success, Some(_)) => (words.verified, Some(words.verified_detail), GOLD, false),
+        (Outcome::Expired, _) => (words.time_up, Some(words.removed), RED, false),
+        (Outcome::Failure, Some(0)) => (words.out_of_tries, Some(words.removed), RED, false),
         (Outcome::Failure, Some(_)) => (words.failed, tries.as_deref(), RED, true),
     };
 

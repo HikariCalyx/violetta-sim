@@ -58,10 +58,11 @@ pub fn title(language: Option<&'static str>) -> &'static str {
 }
 
 /// The words the app writes itself, rather than reading them out of the artwork:
-/// the buttons, and how the result screen reports the outcome.
+/// the buttons, what the result screen reports, and the chrome the bot's own screens
+/// put around a verification.
 ///
-/// These are what the game's own wording is for, so they are short: a caption
-/// over an outcome, and two buttons.
+/// They are what the game's own wording is for, so they are short — a headline, a
+/// line under it, and a button.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
     /// The button that starts a game.
@@ -72,42 +73,131 @@ pub struct Words {
     pub success: &'static str,
     /// How one the player lost is reported.
     pub failed: &'static str,
+    /// What the page says while a verification's session is still being read.
+    pub checking: &'static str,
+    /// What it says when the session could not be read at all; the reason the Worker
+    /// gave follows on the next line.
+    pub unavailable: &'static str,
+    /// The headline for a verification the member passed.
+    pub verified: &'static str,
+    /// The line under it, saying what that means for them.
+    pub verified_detail: &'static str,
+    /// The headline for a verification that used up its attempts.
+    pub out_of_tries: &'static str,
+    /// The headline for one whose clock ran out.
+    pub time_up: &'static str,
+    /// What both of those are followed by: the member is out of the group, and
+    /// rejoining is what gets them another go.
+    pub removed: &'static str,
+    /// How many attempts are left, with `$count` standing in for the number.
+    pub tries_left: &'static str,
+    /// The same line for a single attempt, which English is the only language here
+    /// to write differently — `1 try left`. `None` means `tries_left` covers every
+    /// count.
+    pub try_left: Option<&'static str>,
 }
 
 impl Words {
-    /// A language's words, spelled out as the app itself writes them.
-    const fn new(
-        start: &'static str,
-        try_again: &'static str,
-        success: &'static str,
-        failed: &'static str,
-    ) -> Self {
-        Self {
-            start,
-            try_again,
-            success,
-            failed,
-        }
+    /// The retry line: how many attempts are left, in the wording this language
+    /// uses.
+    ///
+    /// English is the one language here that inflects for a count, which is why it
+    /// carries a second wording for a single attempt; the others write the number
+    /// into their one template. The verification clock and the result screen both
+    /// come through here, so they say the same thing.
+    pub fn tries_left(&self, count: u32) -> String {
+        let template = match count {
+            1 => self.try_left.unwrap_or(self.tries_left),
+            _ => self.tries_left,
+        };
+
+        template.replace("$count", &count.to_string())
     }
 }
 
 /// The words the app writes in `language`.
 ///
-/// One language to a line, like [`title`] and for the same reason:
-/// `scripts/subset-cjk-font.py` reads them from this file to know which glyphs the
-/// embedded fonts have to hold. English is the base artwork and the language the
-/// app is written in, so it is what everything else falls back to.
-///
-/// Returned by value rather than as a `&'static`, because a reference to a
-/// constructor call is not a promoted constant: it would have to be built from a
-/// `const` item per language, which is one table too many.
+/// `scripts/subset-cjk-font.py` reads the strings out of this table to know which
+/// glyphs the embedded fonts have to hold, so each one has to be a literal here
+/// rather than something built at run time. English is the base artwork and the
+/// language the app is written in, so it is what everything else falls back to.
 pub fn words(language: Option<&'static str>) -> Words {
     match language {
-        Some("cn") => Words::new("开始", "再试一次", "成功", "失败"),
-        Some("jp") => Words::new("スタート", "もう一度", "成功", "失敗"),
-        Some("kr") => Words::new("시작", "다시하기", "성공", "실패"),
-        Some("tw") => Words::new("開始", "再試一次", "成功", "失敗"),
-        _ => Words::new("Start", "Try Again", "Success", "Failed"),
+        Some("cn") => Words {
+            start: "开始",
+            try_again: "再试一次",
+            success: "成功",
+            failed: "失败",
+            checking: "正在读取验证信息…",
+            unavailable: "此验证已失效。",
+            verified: "已验证",
+            verified_detail: "现在你可以在群里发言了。",
+            out_of_tries: "机会已用尽",
+            time_up: "时间到了",
+            removed: "你已被移出群聊，可以重新加入再试一次。",
+            tries_left: "剩余 $count 次机会",
+            try_left: None,
+        },
+        Some("jp") => Words {
+            start: "スタート",
+            try_again: "もう一度",
+            success: "成功",
+            failed: "失敗",
+            checking: "認証情報を確認しています…",
+            unavailable: "この認証は利用できません。",
+            verified: "認証完了",
+            verified_detail: "これでグループで発言できます。",
+            out_of_tries: "挑戦回数がなくなりました",
+            time_up: "時間切れ",
+            removed: "グループから退出させられました。再度参加してもう一度お試しください。",
+            tries_left: "残り $count 回",
+            try_left: None,
+        },
+        Some("kr") => Words {
+            start: "시작",
+            try_again: "다시하기",
+            success: "성공",
+            failed: "실패",
+            checking: "인증 정보를 확인하는 중…",
+            unavailable: "이 인증을 사용할 수 없습니다.",
+            verified: "인증 완료",
+            verified_detail: "이제 그룹에서 발언할 수 있습니다.",
+            out_of_tries: "남은 기회가 없습니다",
+            time_up: "시간 초과",
+            removed: "그룹에서 내보내졌습니다. 다시 참여해 재시도할 수 있습니다.",
+            tries_left: "$count회 남음",
+            try_left: None,
+        },
+        Some("tw") => Words {
+            start: "開始",
+            try_again: "再試一次",
+            success: "成功",
+            failed: "失敗",
+            checking: "正在讀取驗證資訊…",
+            unavailable: "此驗證已失效。",
+            verified: "已驗證",
+            verified_detail: "現在你可以在群組裡發言了。",
+            out_of_tries: "機會已用盡",
+            time_up: "時間到了",
+            removed: "你已被移出群組，可以重新加入再試一次。",
+            tries_left: "剩餘 $count 次機會",
+            try_left: None,
+        },
+        _ => Words {
+            start: "Start",
+            try_again: "Try Again",
+            success: "Success",
+            failed: "Failed",
+            checking: "Checking your verification…",
+            unavailable: "This verification is unavailable.",
+            verified: "Verified",
+            verified_detail: "You can talk in the group now.",
+            out_of_tries: "Out of tries",
+            time_up: "Time is up",
+            removed: "You were removed from the group. You can rejoin and try again.",
+            tries_left: "$count tries left",
+            try_left: Some("1 try left"),
+        },
     }
 }
 
@@ -178,31 +268,38 @@ mod tests {
         assert_eq!(match_tag(""), None);
     }
 
-    /// Everything the app writes for itself in `language`: its name, and then the
-    /// words the screens are captioned and buttoned with.
-    fn localised_strings(language: &'static str) -> [&'static str; 5] {
-        let words = super::words(Some(language));
+    /// Every word the app writes for itself in `language`, named so that a failure
+    /// can say which one it is: the four the screens use, and the nine the bot's
+    /// verification adds.
+    fn localised_words(language: Option<&'static str>) -> [(&'static str, &'static str); 13] {
+        let words = super::words(language);
         [
-            super::title(Some(language)),
-            words.start,
-            words.try_again,
-            words.success,
-            words.failed,
+            ("start", words.start),
+            ("try_again", words.try_again),
+            ("success", words.success),
+            ("failed", words.failed),
+            ("checking", words.checking),
+            ("unavailable", words.unavailable),
+            ("verified", words.verified),
+            ("verified_detail", words.verified_detail),
+            ("out_of_tries", words.out_of_tries),
+            ("time_up", words.time_up),
+            ("removed", words.removed),
+            // The wording a single attempt gets, which is the plural one wherever the
+            // language does not inflect.
+            ("try_left", words.try_left.unwrap_or(words.tries_left)),
+            ("tries_left", words.tries_left),
         ]
     }
 
     #[test]
     fn every_shipped_language_has_strings_of_its_own() {
-        let english = super::words(None);
+        let english = localised_words(None);
 
         for language in crate::assets::languages() {
-            let words = super::words(Some(language));
-            for (word, localised, base) in [
-                ("start", words.start, english.start),
-                ("try_again", words.try_again, english.try_again),
-                ("success", words.success, english.success),
-                ("failed", words.failed, english.failed),
-            ] {
+            for ((word, localised), (_, base)) in
+                localised_words(Some(language)).into_iter().zip(english)
+            {
                 assert_ne!(
                     localised, base,
                     "`{language}`'s `{word}` is still the English one"
@@ -215,6 +312,21 @@ mod tests {
                 "`{language}` has no localised name in `language::title`"
             );
         }
+    }
+
+    #[test]
+    fn the_retry_line_is_filled_in() {
+        let words = super::words(None);
+
+        // English inflects, so it is the one language with a wording for one.
+        assert_eq!(words.tries_left(1), "1 try left");
+        assert_eq!(words.tries_left(0), "0 tries left");
+        assert_eq!(words.tries_left(4), "4 tries left");
+
+        // The others write the number into their one template.
+        let korean = super::words(Some("kr"));
+        assert_eq!(korean.tries_left(1), "1회 남음");
+        assert_eq!(korean.tries_left(3), "3회 남음");
     }
 
     #[test]
@@ -234,7 +346,10 @@ mod tests {
             let font = ab_glyph::FontVec::try_from_vec(bytes.to_vec())
                 .unwrap_or_else(|err| panic!("the `{language}` font does not load: {err}"));
 
-            for text in localised_strings(language) {
+            let name = super::title(Some(language));
+            let words = localised_words(Some(language)).map(|(_, word)| word);
+
+            for text in std::iter::once(name).chain(words) {
                 for character in text.chars() {
                     if character.is_whitespace() {
                         continue;

@@ -78,9 +78,16 @@ tab or the window title.
 
 The screens the app composes itself are translated too — `language::words` — since
 an English button under a translated window would be the one thing left over: the
-*Start* button, the *Try Again* button, and the *Success* / *Failed* headings the
-result screen reports the outcome with. The photograph's credit line is left in
-English, because the video it credits is an English title.
+*Start* button, the *Try Again* button, the *Success* / *Failed* headings the result
+screen reports the outcome with, and the chrome the bot's verification adds around
+them — the page that says it is reading the session, the retry line under the
+verification clock, and *Verified* / *Time is up* / *Out of tries* with the line that
+follows them. One string there is a template rather than a sentence: `tries_left`
+carries `$count` for the number, and `language::Words::tries_left` fills it in —
+English, the only one of these languages that inflects, keeps a separate wording for
+a single attempt beside it. The photograph's credit line is left in English, because
+the video it credits is an English title, as are the reasons `net.rs` reports when a
+session cannot be read: they name what went wrong rather than talking to the player.
 
 What is still English in every language is the text baked into the artwork: the
 title bar inside the window frame, the three instruction lines, and the success and
@@ -94,9 +101,10 @@ string would be drawn as replacement boxes. Each language therefore has a font o
 its own: `violetta_lie_detector_sim/fonts/<language>.otf` is a subset of the Noto
 Sans CJK the platform ships, holding only the glyphs that language's strings use — a
 few KB rather than the 9-17 MB of the whole font, and each language keeps its own
-glyph forms. All four together are ~24 KB. `scripts/subset-cjk-font.py` builds them
+glyph forms. All four together are ~65 KB. `scripts/subset-cjk-font.py` builds them
 from the strings `language.rs` spells out, and `cargo test` fails if one of them is
-missing a glyph, so changing a name or a button label tells you to run it again:
+missing a glyph, so changing a name, a button label or an outcome tells you to run it
+again:
 
 ```sh
 py scripts/subset-cjk-font.py

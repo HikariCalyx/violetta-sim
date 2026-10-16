@@ -5,7 +5,7 @@ use std::sync::Arc;
 use egui::{Align, CentralPanel, Color32, Frame, Layout, RichText, Ui};
 
 use crate::assets::{self, Textures};
-use crate::language;
+use crate::language::{self, Words};
 use crate::net::{self, Verification};
 use crate::screens::{self, BACKGROUND, Outcome, game::GameScreen};
 
@@ -84,6 +84,7 @@ impl LieDetectorApp {
     /// there is nothing to play, and starting a game of our own would walk the player
     /// through shuffles the Worker never scored.
     fn start_verified(&mut self, ui: &mut Ui, time: f64) -> bool {
+        let words = language::words(self.textures.language());
         let Some(verification) = self.verification.as_ref() else {
             return true;
         };
@@ -97,7 +98,7 @@ impl LieDetectorApp {
         }
 
         if !self.started {
-            draw_waiting(ui, verification);
+            draw_waiting(ui, verification, words);
             // The first snapshot may arrive at any moment, so keep drawing.
             ui.ctx().request_repaint();
         }
@@ -151,17 +152,15 @@ impl eframe::App for LieDetectorApp {
 /// be read at all.
 ///
 /// The second case is worth spelling out on screen: the page is useless without its
-/// session, and the member's clock is running while they look at it.
-fn draw_waiting(ui: &mut Ui, verification: &Verification) {
+/// session, and the member's clock is running while they look at it. The reason the
+/// Worker gave is appended to it as it stands, since it names what went wrong.
+fn draw_waiting(ui: &mut Ui, verification: &Verification, words: Words) {
     let (message, colour) = match verification.error() {
         Some(error) => (
-            format!("This verification is unavailable.\n{error}"),
+            format!("{}\n{error}", words.unavailable),
             Color32::from_rgb(0xff, 0x6b, 0x6b),
         ),
-        None => (
-            "Checking your verification…".to_owned(),
-            Color32::from_gray(0xc9),
-        ),
+        None => (words.checking.to_owned(), Color32::from_gray(0xc9)),
     };
 
     CentralPanel::default()

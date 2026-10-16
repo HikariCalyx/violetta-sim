@@ -36,6 +36,7 @@ use egui::{
 };
 
 use crate::assets::{self, Textures};
+use crate::language::{self, Words};
 use crate::net::{Plan, Verification};
 use crate::screens::{BACKGROUND, Outcome};
 
@@ -268,7 +269,8 @@ impl GameScreen {
             });
 
         if let Some(verification) = verification {
-            draw_verification(ui, verification, time);
+            let words = language::words(textures.language());
+            draw_verification(ui, verification, time, words);
         }
 
         self.done
@@ -737,8 +739,9 @@ fn preload(ctx: &Context, textures: &mut Textures) {
 /// It is the page's own chrome rather than part of the window: the game has no such
 /// display, and it is the deadline the bot holds the member to. The seconds are read
 /// off the Worker's clock — anchored when the session was last fetched — so a device
-/// whose own clock is wrong still counts down correctly.
-fn draw_verification(ui: &Ui, verification: &Verification, time: f64) {
+/// whose own clock is wrong still counts down correctly. Under them is the retry
+/// line, in the language the page is being read in.
+fn draw_verification(ui: &Ui, verification: &Verification, time: f64, words: Words) {
     let remaining = verification.remaining(time).max(0.0);
     let seconds = remaining.ceil() as u64;
     let clock = format!("{}:{:02}", seconds / 60, seconds % 60);
@@ -753,10 +756,7 @@ fn draw_verification(ui: &Ui, verification: &Verification, time: f64) {
     let tries = verification
         .snapshot()
         .map_or(0, |snapshot| snapshot.attempts_left);
-    let tries = match tries {
-        1 => "1 try left".to_owned(),
-        count => format!("{count} tries left"),
-    };
+    let tries = words.tries_left(tries);
 
     Area::new(Id::new("verification-clock"))
         .anchor(Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
