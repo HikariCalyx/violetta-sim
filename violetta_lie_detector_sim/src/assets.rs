@@ -49,6 +49,9 @@ pub const SPECIAL_CHARACTER_MASK_ON: &str = "lieDetector.npcSpecial.maskOn";
 pub const SPECIAL_CHARACTER_MASK_OFF: &str = "lieDetector.npcSpecial.maskOff";
 /// The walk cycle every character shares while the masks are on.
 pub const CHARACTER_WALK: &str = "lieDetector.npcCommon.move";
+/// The artwork the stage lamps scatter across the stage: the plain standing
+/// character, of which the pattern draws many faint copies.
+pub const PATTERN_FIGURE: &str = "lieDetector.npc.stand.0";
 /// The digits of the detector's readout.
 pub const READOUT_DIGIT: &str = "lieDetector.number1";
 /// The digits of the device's timer, the second of the two digit sets.

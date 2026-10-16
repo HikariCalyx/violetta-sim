@@ -19,6 +19,11 @@ use egui::Vec2;
 /// The window artwork.
 pub const WINDOW: Vec2 = Vec2::new(441.0, 318.0);
 
+/// The opening in the window frame, as `(left, top, width, height)`: everything
+/// that happens on the stage is seen through it, and the frame — drawn last —
+/// masks whatever leaves it.
+pub const OPENING: (f32, f32, f32, f32) = (15.0, 67.0, 412.0, 187.0);
+
 /// How many positions the stage has.
 pub const ANSWER_COUNT: usize = 4;
 

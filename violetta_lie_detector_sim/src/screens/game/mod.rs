@@ -8,13 +8,14 @@
 //! 2. the animated layer — the four characters, and the glow on the special one —
 //!    drawn after the backdrop and before the frame, so the frame masks whatever
 //!    moves out of the opening;
-//! 3. the stage lights, at 60% once the masks are on, cycling their colour twice a
-//!    second. They are drawn *over* the characters and still under the frame: the
+//! 3. the pattern of faint figures the lamps throw up, over the characters;
+//! 4. the stage lights, at 60% once the masks are on, cycling their colour twice a
+//!    second. They are drawn over the characters and still under the frame: the
 //!    lamps light the stage from in front of it, so the light falls on whoever is
 //!    standing in it;
-//! 4. the window frame;
-//! 5. the instruction line, the device readout and the answer buttons;
-//! 6. the `READY`, `START`, success and fail banners, which play over it all.
+//! 5. the window frame;
+//! 6. the instruction line, the device readout and the answer buttons;
+//! 7. the `READY`, `START`, success and fail banners, which play over it all.
 //!
 //! A game runs through [`Phase`]: a countdown, the characters appearing while the
 //! glow marks the special one, `READY`, `START`, the masks going on as the lights
@@ -24,6 +25,7 @@
 
 mod characters;
 mod layout;
+mod pattern;
 mod rng;
 mod stage;
 mod widgets;
@@ -123,6 +125,8 @@ pub struct GameScreen {
     rng: Rng,
     /// The four characters, in the order they were spawned.
     characters: [Character; ANSWERS],
+    /// The faint figures the lamps throw up, scattered afresh every round.
+    pattern: pattern::Pattern,
     /// The position the player picked in each round; `None` for the rounds that
     /// were never reached, because an earlier one ran out of time.
     picks: [Option<u8>; ANSWERS],
@@ -138,12 +142,14 @@ impl GameScreen {
     pub fn new() -> Self {
         let mut rng = Rng::new(rng::seed(0.0));
         let characters = characters::spawn(&mut rng);
+        let pattern = pattern::Pattern::scatter(&mut rng);
 
         Self {
             phase: Phase::Countdown,
             phase_started: 0.0,
             rng,
             characters,
+            pattern,
             picks: [None; ANSWERS],
             verdicts: [false; ANSWERS],
             round: 0,
@@ -156,6 +162,7 @@ impl GameScreen {
     pub fn restart(&mut self, ctx: &Context, textures: &mut Textures, time: f64) {
         self.rng = Rng::new(rng::seed(time));
         self.characters = characters::spawn(&mut self.rng);
+        self.pattern = pattern::Pattern::scatter(&mut self.rng);
         self.picks = [None; ANSWERS];
         self.verdicts = [false; ANSWERS];
         self.round = 0;
@@ -189,6 +196,7 @@ impl GameScreen {
 
                 self.draw_backdrop(ui, textures, &stage);
                 let clicked = self.draw_characters(ui, textures, &stage, time);
+                self.draw_pattern(ui, textures, &stage, time);
                 self.draw_lights(ui, textures, &stage, time);
                 self.draw_ready_stamp(ui, textures, &stage, time);
                 self.draw_window(ui, textures, &stage);
@@ -289,6 +297,10 @@ impl GameScreen {
         self.verdicts[self.round] = position == special;
         self.picks[self.round] = Some(position as u8 + 1);
 
+        // A fresh scatter for the round that follows, so the shapes the player was
+        // reading are not the ones they are reading next.
+        self.pattern = pattern::Pattern::scatter(&mut self.rng);
+
         self.round += 1;
         if self.round == ANSWERS {
             self.enter(Phase::MaskOff, time);
@@ -383,6 +395,19 @@ impl GameScreen {
         if let Some(backdrop) = textures.get(ui.ctx(), assets::STAGE_BACKDROP) {
             draw_pivoted(ui, stage, &backdrop, WINDOW_ORIGIN);
         }
+    }
+
+    /// The faint figures the lamps throw up, laid over the characters.
+    ///
+    /// They come and go with the lamps rather than being switched on and off: the
+    /// scatter is drawn at the fraction of the lamps' strength that is showing.
+    fn draw_pattern(&self, ui: &Ui, textures: &mut Textures, stage: &Stage, time: f64) {
+        let fade = self.light_alpha(time - self.phase_started) / LIGHT_ALPHA;
+        if fade <= 0.0 {
+            return;
+        }
+
+        self.pattern.draw(ui, textures, stage, fade);
     }
 
     /// The stage lights, which come up while the masks go on and go out again

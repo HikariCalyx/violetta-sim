@@ -1,8 +1,8 @@
 //! A tiny random number generator, so the game needs no extra dependency.
 //!
-//! Only two things are random in a round: where the characters appear and where
-//! they walk to. Xorshift64* is small, has no state worth persisting, and is far
-//! better than this needs.
+//! Only a few things are random in a round: where the characters appear, where
+//! they walk to, and where the lamps scatter their figures. Xorshift64* is small,
+//! has no state worth persisting, and is far better than this needs.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,6 +36,12 @@ impl Rng {
     pub fn below(&mut self, bound: usize) -> usize {
         let bound = bound.max(1) as u64;
         (self.next_u64() % bound) as usize
+    }
+
+    /// A value in `0.0..1.0`.
+    pub fn fraction(&mut self) -> f32 {
+        // Twenty-four bits is finer than an `f32` can tell apart at this range.
+        (self.next_u64() >> 40) as f32 / (1 << 24) as f32
     }
 
     /// Shuffles `items` in place, leaving every order equally likely.
