@@ -2,13 +2,15 @@
 
 use egui::{Align, Button, CentralPanel, Color32, Frame, Layout, RichText, Ui};
 
+use crate::language::Words;
 use crate::screens::{BACKGROUND, Outcome};
 
-/// Draws the outcome and reports whether *Try Again* was clicked.
-pub fn show(ui: &mut Ui, outcome: Outcome) -> bool {
+/// Draws the outcome in the words the app is being played in, and reports whether
+/// *Try Again* was clicked.
+pub fn show(ui: &mut Ui, outcome: Outcome, words: Words) -> bool {
     let (headline, colour) = match outcome {
-        Outcome::Success => ("Success", Color32::from_rgb(0xff, 0xd2, 0x00)),
-        Outcome::Failure => ("Failed", Color32::from_rgb(0xff, 0x6b, 0x6b)),
+        Outcome::Success => (words.success, Color32::from_rgb(0xff, 0xd2, 0x00)),
+        Outcome::Failure => (words.failed, Color32::from_rgb(0xff, 0x6b, 0x6b)),
     };
 
     let mut try_again = false;
@@ -23,7 +25,7 @@ pub fn show(ui: &mut Ui, outcome: Outcome) -> bool {
 
                 ui.add_space(48.0);
 
-                let button = Button::new(RichText::new("Try Again").size(22.0))
+                let button = Button::new(RichText::new(words.try_again).size(22.0))
                     .min_size(egui::vec2(180.0, 52.0));
                 if ui.add(button).clicked() {
                     try_again = true;

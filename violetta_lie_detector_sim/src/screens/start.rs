@@ -7,6 +7,7 @@ use egui::{
 };
 
 use crate::assets::{self, Textures};
+use crate::language;
 use crate::screens::BACKGROUND;
 
 /// The video the background photograph is a still from, which the credit links to.
@@ -29,7 +30,7 @@ pub fn show(ui: &mut Ui, textures: &mut Textures) -> bool {
                 ui.add_space(ui.available_height() * 0.28);
 
                 ui.label(
-                    RichText::new("Violetta Lie Detector Simulator")
+                    RichText::new(language::title(textures.language()))
                         .size(40.0)
                         .strong()
                         .color(Color32::from_rgb(0xff, 0xd2, 0x00)),
@@ -37,8 +38,10 @@ pub fn show(ui: &mut Ui, textures: &mut Textures) -> bool {
 
                 ui.add_space(48.0);
 
-                let start = Button::new(RichText::new("Start").size(22.0))
-                    .min_size(egui::vec2(180.0, 52.0));
+                let start = Button::new(
+                    RichText::new(language::words(textures.language()).start).size(22.0),
+                )
+                .min_size(egui::vec2(180.0, 52.0));
                 if ui.add(start).clicked() {
                     start_clicked = true;
                 }

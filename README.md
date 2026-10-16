@@ -11,16 +11,20 @@ A WebAssembly (Rust) re-implementation of the *Lie Detector* mini-game.
 ## Layout
 
 ```
-index.html                 Trunk entry point (builds the crate below)
+index.html                 Trunk entry point (builds the crate below, and the favicon)
 Trunk.toml                 Trunk build settings: the wasm-opt version it uses
-scripts/                   Checks for the build, run in CI
+scripts/                   Tools for the build, the second one run in CI
     check-wasm-table.mjs   Guards the built wasm against a breaking wasm-opt
+    subset-cjk-font.py     Builds the fonts the localised names are drawn with
 Resources/                 Sprite artwork, baked into the binary at build time
     bg.jpg                 The title screen's background photograph
+    2190000.png            The item's icon, which is also the page's favicon
     sprite-pivots.txt      Image origins, one sprite per line
+    <lang>/                Artwork translated into that language (cn, jp, kr, tw)
 Reference/                 Gameplay recordings used as a reference (git-ignored)
 violetta_lie_detector_sim/ The Rust crate
     build.rs               Indexes Resources/ into the sprite and animation tables
+    fonts/                 Text fonts: one subset per language
     src/main.rs            Native + wasm entry points
     src/app.rs             App state and the screen switch
     src/assets.rs          Sprite lookup and the texture cache
@@ -46,6 +50,58 @@ order, and any gaps in the frame numbering) are discovered from the file names t
 The sprites are pixel art and are sampled nearest-neighbour; a photograph is not,
 so `Textures::get_smooth` decodes one with linear filtering for artwork that is
 resized to fit rather than drawn at its own size.
+
+### Languages
+
+A subdirectory of `Resources/` named after a language holds the artwork translated
+into it, and stands in for the base sprite of the same name while that language is
+shown: `Resources/kr/lieDetector.back1.png` is the Korean window frame, and the
+three `textMessage` sprites and the standby dialog are translated with it. What a
+language does not carry is drawn from the base artwork — which is the English one —
+so a language only has to translate what it actually has, and English needs no
+directory at all.
+
+Which language is shown is the platform's answer, not the player's: the browser's
+`navigator.language` in the wasm build, or `LANGUAGE`/`LC_ALL`/`LANG` natively (see
+`src/language.rs`). A tag is matched on its primary subtag, with the region or
+script deciding between the two Chinese translations (`zh-TW` and `zh-Hant` get
+`tw`, anything else Chinese gets `cn`), and a language nothing is translated into
+falls back to the base artwork.
+
+Each language also gives the app itself a name — `language::title` — which is the
+character's name as that language's artwork writes it (`碧欧蕾塔` in Simplified
+Chinese, `菲歐娜` in Traditional Chinese, where the localisation renamed her, `ビオルタ`
+in Japanese and `비올레타` in Korean) followed by that language's own word for the
+device. It is the heading of the title screen, and it is what goes in the browser
+tab or the window title.
+
+The screens the app composes itself are translated too — `language::words` — since
+an English button under a translated window would be the one thing left over: the
+*Start* button, the *Try Again* button, and the *Success* / *Failed* headings the
+result screen reports the outcome with. The photograph's credit line is left in
+English, because the video it credits is an English title.
+
+What is still English in every language is the text baked into the artwork: the
+title bar inside the window frame, the three instruction lines, and the success and
+fail banners. Those are sprites, not strings, so translating them means
+redrawing them.
+
+### The name fonts
+
+egui's bundled fonts — Ubuntu and Hack — have no CJK in them at all, so a localised
+string would be drawn as replacement boxes. Each language therefore has a font of
+its own: `violetta_lie_detector_sim/fonts/<language>.otf` is a subset of the Noto
+Sans CJK the platform ships, holding only the glyphs that language's strings use — a
+few KB rather than the 9-17 MB of the whole font, and each language keeps its own
+glyph forms. All four together are ~24 KB. `scripts/subset-cjk-font.py` builds them
+from the strings `language.rs` spells out, and `cargo test` fails if one of them is
+missing a glyph, so changing a name or a button label tells you to run it again:
+
+```sh
+py scripts/subset-cjk-font.py
+```
+
+The fonts are licensed under the SIL Open Font License, which is next to them.
 
 ### Pivots
 

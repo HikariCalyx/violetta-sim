@@ -1,11 +1,15 @@
 //! Embeds the sprite artwork, its animation frames and its pivots.
 //!
 //! Every PNG in `Resources/` — and the one JPEG — is baked into the binary, so
-//! there is nothing to fetch at run time and no asset path to get wrong. Two
-//! tables are generated:
+//! there is nothing to fetch at run time and no asset path to get wrong. What sits
+//! in a subdirectory is a *language*: `Resources/kr/` holds the artwork that
+//! replaces the base sprite of the same name while Korean is being shown, so a
+//! language only has to carry what it translates, and one that is missing a sprite
+//! falls back to the base artwork. Three tables are generated:
 //!
 //! * [`SPRITES`] – sprite name to file contents and pivot.
 //! * [`FRAME_GROUPS`] – animation group to its frames, in index order.
+//! * [`LANGUAGE_SPRITES`] – language to the sprites it replaces.
 //!
 //! ### Pivots
 //!
@@ -41,20 +45,35 @@ fn main() {
 
     let mut sprites: Vec<(String, String)> = Vec::new();
     let mut groups: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    let mut languages: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
 
     for path in paths {
-        let extension = path.extension().and_then(|ext| ext.to_str());
-        if !matches!(extension, Some("png" | "jpg" | "jpeg")) {
+        if path.is_dir() {
+            let language = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("language directory names are UTF-8")
+                .to_owned();
+            println!("cargo:rerun-if-changed={}", path.display());
+
+            let mut translated: Vec<(String, String)> = fs::read_dir(&path)
+                .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()))
+                .map(|entry| entry.expect("readable directory entry").path())
+                .filter(|path| is_artwork(path))
+                .map(|path| (sprite_name(&path), file_path(&path)))
+                .collect();
+            translated.sort();
+            if !translated.is_empty() {
+                languages.insert(language, translated);
+            }
             continue;
         }
-        // `lieDetector.gameEffect.emphasis .0.png` has a stray space in the name;
-        // folding it away gives every sprite a tidy, uniform key.
-        let name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("sprite file names are UTF-8")
-            .replace(" .", ".");
-        let file = path.to_string_lossy().replace('\\', "/");
+
+        if !is_artwork(&path) {
+            continue;
+        }
+        let name = sprite_name(&path);
+        let file = file_path(&path);
 
         // `lieDetector.npc.stand.3` is frame 3 of the `lieDetector.npc.stand` group.
         if let Some((group, frame)) = name.rsplit_once('.')
@@ -114,10 +133,56 @@ fn main() {
         }
         code.push_str("]),\n");
     }
+    code.push_str("];\n\n");
+
+    code.push_str("/// The artwork each language replaces, keyed by language and then by the\n");
+    code.push_str(
+        "/// sprite name it stands in for. A language carries only what it translates:\n",
+    );
+    code.push_str(
+        "/// a sprite it does not have is drawn from the base artwork of the same name,\n",
+    );
+    code.push_str("/// pivot included, since a translation is drawn where the original was.\n");
+    code.push_str("pub static LANGUAGE_SPRITES: &[(&str, LanguageSprites)] = &[\n");
+    for (language, translated) in &languages {
+        code.push_str(&format!("    ({language:?}, &[\n"));
+        for (name, file) in translated {
+            let (pivot_x, pivot_y) = pivots.get(name).copied().unwrap_or((0, 0));
+            code.push_str(&format!(
+                "        ({name:?}, include_bytes!({file:?}), ({pivot_x}, {pivot_y})),\n"
+            ));
+        }
+        code.push_str("    ]),\n");
+    }
     code.push_str("];\n");
 
     let out = Path::new(&env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join("sprites.rs");
     fs::write(&out, code).expect("writable build output directory");
+}
+
+/// Whether `path` is artwork the build embeds: a PNG, or the JPEG the title screen
+/// uses as its background.
+fn is_artwork(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("png" | "jpg" | "jpeg")
+    )
+}
+
+/// The name `path` is indexed under: its file name without the extension.
+///
+/// `lieDetector.gameEffect.emphasis .0.png` has a stray space in the name; folding
+/// it away gives every sprite a tidy, uniform key.
+fn sprite_name(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("sprite file names are UTF-8")
+        .replace(" .", ".")
+}
+
+/// `path` as `include_bytes!` wants it.
+fn file_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Reads every sprite pivot out of `Resources/sprite-pivots.txt`.

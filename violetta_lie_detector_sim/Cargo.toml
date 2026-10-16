@@ -11,6 +11,11 @@ egui = "0.36"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
 
+# Only the tests need to read a font file, to check that the embedded ones cover
+# every localised name. It is already in the tree, under `epaint`.
+[dev-dependencies]
+ab_glyph = "0.2"
+
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
@@ -22,6 +27,7 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
+    "Navigator",
     "Window",
 ] }
 # eframe's `wgpu` feature is built with wgpu's default features disabled, so no
