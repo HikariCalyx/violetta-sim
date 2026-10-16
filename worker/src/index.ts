@@ -25,7 +25,7 @@ export default {
     // binding before the Worker runs; only the paths below reach this code.
     if (url.pathname === '/telegram/webhook') return handleWebhook(request, env, ctx);
     if (url.pathname === '/telegram' && request.method === 'GET') return serveGame(request, env);
-    if (url.pathname === '/api/health') return json({ ok: true });
+    if (url.pathname === '/api/health') return json(health(env));
 
     const match = SESSION_API.exec(url.pathname);
     if (match) return handleSessionApi(request, env, match[1], match[2] as 'state' | 'pick');
@@ -95,3 +95,23 @@ async function handleSessionApi(
 
 const isRoundIndex = (n: number) => Number.isInteger(n) && n >= 0 && n < 4;
 const isSlot = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4;
+
+/**
+ * A deploy that forgot a secret or still carries the placeholder values looks completely
+ * healthy otherwise — it only fails once a real member joins, as a mute notice whose
+ * button goes nowhere. So report which pieces are actually there.
+ *
+ * Booleans for the secrets (never their values), and the two public values verbatim:
+ * both are already visible in every link the bot hands out.
+ */
+function health(env: Env): Record<string, unknown> {
+  return {
+    ok: true,
+    config: {
+      botToken: Boolean(env.BOT_TOKEN),
+      webhookSecret: Boolean(env.WEBHOOK_SECRET),
+      botUsername: env.BOT_USERNAME ?? null,
+      verifyOrigin: env.VERIFY_ORIGIN ?? null,
+    },
+  };
+}

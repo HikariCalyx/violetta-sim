@@ -37,6 +37,12 @@ env:
 
 jobs:
   build:
+    # Publishing is limited to the branches named in the trigger above. The push
+    # filter already keeps every other branch out; this also blocks a manual run
+    # from one (e.g. `tgbot`), which would otherwise build and then be rejected by
+    # the github-pages environment's branch protection. `deploy` needs this job, so
+    # skipping it here skips that too.
+    if: contains(fromJSON('["main","ghpages-src"]'), github.ref_name)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

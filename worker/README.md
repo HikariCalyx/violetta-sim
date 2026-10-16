@@ -1,7 +1,8 @@
-# violetta-verifier
+# violetta
 
 A Cloudflare Worker that gates the members of a Telegram group behind the mini-game in
-this repository.
+this repository. (`violetta` is the Worker's name in `wrangler.jsonc`, which is also what
+the Cloudflare dashboard lists and what an API token scoped to one Worker would use.)
 
 A new member is muted, given 10 minutes in total, and can only talk after finishing the
 game in the bot's PM. Running out of time, or failing all three attempts, removes them
@@ -68,7 +69,7 @@ the wasm bundle, checks its startup, typechecks the Worker and deploys — on ev
 | `CLOUDFLARE_ACCOUNT_ID` | the account id in the Cloudflare dashboard sidebar |
 
 `BOT_TOKEN` and `WEBHOOK_SECRET` are deliberately **not** in the workflow: Worker secrets
-survive a deploy, so they are set once — dashboard → Workers → violetta-verifier →
+survive a deploy, so they are set once — dashboard → Workers → violetta →
 Settings → Variables and Secrets, or `npx wrangler secret put`. Registering the webhook
 (step 5) is a one-off as well, and does not need to be repeated per deploy.
 

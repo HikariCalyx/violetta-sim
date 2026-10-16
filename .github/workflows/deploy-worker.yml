@@ -12,7 +12,7 @@
 #
 # The bot secrets are deliberately NOT deployed from here. Worker secrets survive
 # a deploy, so they are set once:
-#   dashboard → Workers → violetta-verifier → Settings → Variables and Secrets
+#   dashboard → Workers → violetta → Settings → Variables and Secrets
 #   (or `npx wrangler secret put BOT_TOKEN` from a machine with Node >= 22)
 #     BOT_TOKEN, WEBHOOK_SECRET
 # The webhook itself is also a one-off: see worker/README.md step 5.
@@ -21,7 +21,9 @@ name: Deploy the verification Worker
 
 on:
   push:
-    branches: [main, ghpages-src]
+    # `tgbot` is the branch this was set up on; trim the list to whichever branch
+    # the Worker should be published from.
+    branches: [main, ghpages-src, tgbot]
     # The Worker ships the site, so anything that changes the bundle has to
     # trigger a deploy — not just `worker/` itself.
     paths:
