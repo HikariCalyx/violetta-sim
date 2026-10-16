@@ -5,11 +5,13 @@
 //! 412x187 black opening:
 //!
 //! 1. the stage backdrop, at the top-left of the opening;
-//! 2. the stage lights, at 60% once the masks are on, cycling their colour twice a
-//!    second;
-//! 3. the animated layer — the four characters, and the glow on the special one —
+//! 2. the animated layer — the four characters, and the glow on the special one —
 //!    drawn after the backdrop and before the frame, so the frame masks whatever
 //!    moves out of the opening;
+//! 3. the stage lights, at 60% once the masks are on, cycling their colour twice a
+//!    second. They are drawn *over* the characters and still under the frame: the
+//!    lamps light the stage from in front of it, so the light falls on whoever is
+//!    standing in it;
 //! 4. the window frame;
 //! 5. the instruction line, the device readout and the answer buttons;
 //! 6. the `READY`, `START`, success and fail banners, which play over it all.
@@ -186,8 +188,8 @@ impl GameScreen {
                 }
 
                 self.draw_backdrop(ui, textures, &stage);
-                self.draw_lights(ui, textures, &stage, time);
                 let clicked = self.draw_characters(ui, textures, &stage, time);
+                self.draw_lights(ui, textures, &stage, time);
                 self.draw_ready_stamp(ui, textures, &stage, time);
                 self.draw_window(ui, textures, &stage);
                 if let Some(message) = self.banner_message() {
