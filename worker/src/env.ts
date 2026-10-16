@@ -23,17 +23,15 @@ export interface Env {
 /**
  * A chat whose new members are gated.
  *
- * There is no enrolment step: the bot gates every chat where it is an administrator with
- * the two rights it needs (see `gating.ts`), and an admin can switch that off per chat with
- * `/verify_here off`.
+ * There is no enrolment and no in-chat switch: the bot gates every chat where it is an
+ * administrator with the two rights it needs (see `gating.ts`), and taking those rights
+ * away — or removing it — is what stops it.
  */
 export interface RegisteredChat {
   chatId: number;
   title: string;
   /** When the bot's rights here were last confirmed, in unix ms. */
   checkedAt: number;
-  /** Set when an admin switched gating off by hand; `null` while it is on. */
-  disabledAt: number | null;
 }
 
 /**

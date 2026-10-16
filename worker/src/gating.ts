@@ -55,7 +55,7 @@ function furthestDeadline(state: SessionState): number {
 async function gatedChat(env: Env, chat: TgChat): Promise<RegisteredChat | null> {
   const registry = registryStub(env);
   const known = await registry.get(chat.id);
-  if (known) return known.disabledAt === null ? known : null;
+  if (known) return known;
 
   if (!(await botRights(env, chat.id))) return null;
   console.info('gating this chat: the bot has the rights it needs', { chatId: chat.id });
@@ -95,14 +95,6 @@ async function botRights(env: Env, chatId: number): Promise<boolean> {
     );
     return false;
   }
-}
-
-/** What the bot needs before it can verify anybody. */
-function missingRightsMessage(): string {
-  return (
-    'I need to be an admin in this chat with "Ban users" (that is what mutes and kicks) and ' +
-    '"Delete messages" before I can verify new members.'
-  );
 }
 
 export async function onMemberJoined(env: Env, chat: TgChat, user: TgUser): Promise<void> {
@@ -215,16 +207,13 @@ async function onBotMembership(env: Env, update: TgChatMemberUpdated): Promise<v
     self.can_delete_messages === true;
 
   if (enough) {
-    // Promoted: gate from now on, without anybody having to ask. `remember` keeps an
-    // admin's earlier `/verify_here off` in place.
-    const entry = await registry.remember(chatId, update.chat.title ?? 'the group');
-    if (entry.disabledAt === null) {
-      console.info('gating this chat now that the bot is an admin', { chatId });
-    }
+    // Promoted: gate from now on, without anybody having to ask.
+    await registry.remember(chatId, update.chat.title ?? 'the group');
+    console.info('gating this chat now that the bot is an admin', { chatId });
     return;
   }
 
-  if (known && known.disabledAt === null) {
+  if (known) {
     await registry.forget(chatId);
     console.warn(
       'the bot no longer has the rights it needs here: promote it back with "Ban users" and "Delete messages"',
@@ -272,68 +261,6 @@ async function onPrivateStart(env: Env, user: TgUser, chatId: number): Promise<v
   );
 }
 
-/**
- * `/verify_here [on|off]` — what is happening in this chat, and the switch an admin can
- * throw.
- *
- * It is not how a chat is enrolled: the bot gates any chat where it holds the rights. This
- * is the escape hatch for a chat where it should not, and the way to see why it is not.
- */
-async function onVerifyHere(env: Env, msg: TgMessage): Promise<void> {
-  const from = msg.from;
-  if (!from) return;
-  const chatId = msg.chat.id;
-  const registry = registryStub(env);
-  const arg = (msg.text ?? '').split(/\s+/)[1]?.toLowerCase();
-  const summary =
-    `Verification is ON for this chat: new members are muted for ${MUTE_SECONDS / 60} minutes and must ` +
-    `finish the mini-game in ${env.BOT_USERNAME}'s PM.`;
-  const reply = (text: string) =>
-    callTelegram(env, 'sendMessage', {
-      chat_id: chatId,
-      text,
-      ...(msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {}),
-    });
-
-  const member = await callTelegram<TgChatMember>(env, 'getChatMember', {
-    chat_id: chatId,
-    user_id: from.id,
-  });
-  if (member.status !== 'creator' && member.status !== 'administrator') {
-    await reply('Only a chat admin can change verification for this chat.');
-    return;
-  }
-
-  const rights = await botRights(env, chatId);
-
-  if (arg === 'off') {
-    await registry.disable(chatId, msg.chat.title ?? 'the group');
-    await reply(
-      'Verification is OFF for this chat, and /verify_here on turns it back on. Members muted ' +
-        'earlier stay muted — lift those by hand if this was a mistake.',
-    );
-    return;
-  }
-
-  if (!rights) {
-    await reply(missingRightsMessage());
-    return;
-  }
-
-  if (arg === 'on') {
-    await registry.enable(chatId, msg.chat.title ?? 'the group');
-    await reply(summary);
-    return;
-  }
-
-  const known = await registry.get(chatId);
-  if (known?.disabledAt != null) {
-    await reply('Verification is OFF for this chat: an admin switched it off with /verify_here off.');
-    return;
-  }
-  await reply(summary);
-}
-
 /** Entry point for a webhook update. Never throws: a retried update would duplicate work. */
 export async function dispatch(env: Env, update: TgUpdate): Promise<void> {
   try {
@@ -362,10 +289,6 @@ export async function dispatch(env: Env, update: TgUpdate): Promise<void> {
     }
 
     if (!msg.from || msg.from.is_bot) return;
-    if (msg.text?.startsWith('/verify_here')) {
-      await onVerifyHere(env, msg);
-      return;
-    }
     await onGroupMessage(env, msg);
   } catch (err) {
     console.error('update failed', update.update_id, err instanceof Error ? err.message : err);

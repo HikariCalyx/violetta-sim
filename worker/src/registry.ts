@@ -34,31 +34,9 @@ export class ChatRegistry extends DurableObject<Env> {
     return (await this.all()).find((chat) => chat.chatId === chatId) ?? null;
   }
 
-  /** Records that the bot can gate this chat, leaving any admin's choice intact. */
+  /** Records that the bot can gate this chat. */
   async remember(chatId: number, title: string): Promise<RegisteredChat> {
-    const known = await this.get(chatId);
-    return this.upsert({
-      chatId,
-      title,
-      checkedAt: Date.now(),
-      disabledAt: known?.disabledAt ?? null,
-    });
-  }
-
-  /** Switches gating on for this chat, clearing an admin's earlier `off`. */
-  async enable(chatId: number, title: string): Promise<RegisteredChat> {
-    return this.upsert({ chatId, title, checkedAt: Date.now(), disabledAt: null });
-  }
-
-  /** Switches gating off for this chat, remembering that the bot could still do it. */
-  async disable(chatId: number, title: string): Promise<RegisteredChat> {
-    const known = await this.get(chatId);
-    return this.upsert({
-      chatId,
-      title,
-      checkedAt: known?.checkedAt ?? Date.now(),
-      disabledAt: Date.now(),
-    });
+    return this.upsert({ chatId, title, checkedAt: Date.now() });
   }
 
   /** Forgets the chat: the bot was removed from it, or lost a right it needs. */
