@@ -5,6 +5,7 @@
 
 mod app;
 mod assets;
+mod language;
 mod net;
 mod screens;
 

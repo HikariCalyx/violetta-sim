@@ -1,8 +1,11 @@
 //! Application state and the top-level screen switch.
 
+use std::sync::Arc;
+
 use egui::{Align, CentralPanel, Color32, Frame, Layout, RichText, Ui};
 
 use crate::assets::{self, Textures};
+use crate::language;
 use crate::net::{self, Verification};
 use crate::screens::{self, BACKGROUND, Outcome, game::GameScreen};
 
@@ -32,20 +35,24 @@ pub struct LieDetectorApp {
 impl LieDetectorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // The UI is drawn on top of its own artwork, so do not follow the
-        // browser's/desktop's light or dark preference.
+        // browser's/desktop's light or dark preference. The artwork, and the words
+        // the screens write themselves, are read from the language the platform is
+        // set to.
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
 
         // A link the bot hands out carries the session it belongs to. Without one
         // this is the plain simulator, which is also what the public demo is.
         let verification = net::session_id().map(Verification::open);
 
-        let mut textures = Textures::default();
+        let mut textures = Textures::detect();
         // The title screen's photograph is what the first frame shows, so it is
         // decoded here; the rest of the artwork is loaded while the countdown is on
         // screen. A verification never shows that screen, so it is not decoded.
         if verification.is_none() {
             textures.get_smooth(&cc.egui_ctx, assets::START_BACKGROUND);
         }
+        install_name_fonts(&cc.egui_ctx);
+        set_title(&cc.egui_ctx, language::title(textures.language()));
 
         Self {
             // A verification does not start at the title screen: the member is muted
@@ -123,7 +130,8 @@ impl eframe::App for LieDetectorApp {
                 }
             }
             Screen::Result(outcome) => {
-                let again = screens::result::show(ui, outcome, self.verification.as_ref());
+                let words = language::words(self.textures.language());
+                let again = screens::result::show(ui, outcome, self.verification.as_ref(), words);
                 if again {
                     // A verification replays with the shuffle the Worker sent for the
                     // next attempt, which arrives with the report that ended the last
@@ -164,4 +172,52 @@ fn draw_waiting(ui: &mut Ui, verification: &Verification) {
                 ui.label(RichText::new(message).size(19.0).color(colour));
             });
         });
+}
+
+/// Adds the fonts the localised names are drawn with.
+///
+/// egui's own fonts have no CJK, and a name it cannot draw is a row of boxes. Each
+/// of these is a subset holding one language's name (see [`assets::LANGUAGE_FONTS`]),
+/// and they go on the end of the families rather than at the front: a glyph is
+/// looked up in order, so Latin keeps the font the rest of the app uses and only
+/// the CJK falls through to these.
+fn install_name_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    for (language, bytes) in assets::LANGUAGE_FONTS {
+        fonts.font_data.insert(
+            (*language).to_owned(),
+            Arc::new(egui::FontData::from_static(bytes)),
+        );
+
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push((*language).to_owned());
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
+/// Puts the app's name where the platform shows it: the browser tab when running
+/// in a browser, the window title on the desktop.
+///
+/// The desktop can be told through egui, but a web build cannot — eframe's web
+/// runner does not act on the viewport title — so the browser gets it from the
+/// document directly. Either way the name in `index.html` and in `main.rs` is only
+/// what shows before the app starts.
+fn set_title(ctx: &egui::Context, title: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ctx;
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            document.set_title(title);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
 }

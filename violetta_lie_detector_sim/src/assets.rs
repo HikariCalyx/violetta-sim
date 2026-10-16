@@ -4,6 +4,12 @@
 //! indexes the animation frames, so a sprite is named by its file name without the
 //! extension (`lieDetector.back1`), and one frame of an animation by `<name>.<frame>`
 //! (`lieDetector.npc.stand.3`). Adding artwork needs no code change here.
+//!
+//! A subdirectory of `Resources/` is a language: the sprites in `Resources/kr/`
+//! stand in for the base sprite of the same name while Korean is being shown, and a
+//! sprite a language does not carry is drawn from the base artwork. Looking up a
+//! sprite therefore needs to know which language the app is showing — see
+//! [`Textures`] and [`language`](crate::language).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -11,6 +17,19 @@ use std::sync::OnceLock;
 use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2};
 
 include!(concat!(env!("OUT_DIR"), "/sprites.rs"));
+
+/// The sprites one language replaces, in name order: the sprite name it stands in
+/// for, the image's bytes, and the pivot the drawing hangs from within it.
+type LanguageSprites = &'static [(&'static str, &'static [u8], (i32, i32))];
+
+/// What a name resolves to: the key it is cached under — the language, if the
+/// artwork is that language's rather than the base's, and the name — and the image
+/// with its pivot.
+type Resolved = (
+    (Option<&'static str>, &'static str),
+    &'static [u8],
+    (i32, i32),
+);
 
 /// The window frame, with its title bar, instruction strip and device.
 pub const WINDOW_FRAME: &str = "lieDetector.back1";
@@ -66,6 +85,29 @@ pub const STANDBY_DIGIT: &str = "lieDetectorStandBy.number";
 /// with linear filtering rather than with the nearest-neighbour the sprites use.
 pub const START_BACKGROUND: &str = "bg";
 
+/// The languages `Resources/` carries artwork for — a directory per language, named
+/// as a two-letter code. What each language replaces is in [`LANGUAGE_SPRITES`],
+/// which `build.rs` generates.
+pub fn languages() -> impl Iterator<Item = &'static str> {
+    LANGUAGE_SPRITES.iter().map(|(language, _)| *language)
+}
+
+/// The font each language's own name needs, keyed by language.
+///
+/// egui's bundled fonts carry no CJK at all, so a name like `비올레타 거짓말 탐지
+/// 시뮬레이터` would come out as replacement boxes. While a whole CJK font is 9 to
+/// 17 MB, these are subsets holding only the glyphs that language's name uses — a
+/// few KB each — taken from the Noto Sans CJK the platform ships, which is why each
+/// language has its own: they carry their language's glyph forms. `cargo test`
+/// checks that a shipped language's font covers its name, and
+/// `scripts/subset-cjk-font.py` builds them.
+pub static LANGUAGE_FONTS: &[(&str, &[u8])] = &[
+    ("cn", include_bytes!("../fonts/cn.otf")),
+    ("jp", include_bytes!("../fonts/jp.otf")),
+    ("kr", include_bytes!("../fonts/kr.otf")),
+    ("tw", include_bytes!("../fonts/tw.otf")),
+];
+
 /// The frames of animation `group`, in index order.
 ///
 /// Groups are named after the sprites that make them up, so the frames of the
@@ -118,12 +160,33 @@ fn frame_index() -> &'static HashMap<&'static str, &'static [&'static str]> {
 }
 
 /// Decodes sprites on demand and keeps their textures for the app's lifetime.
+///
+/// It holds the language being shown, because that decides which artwork a name
+/// resolves to: a texture is cached per language as well as per sprite, so a lookup
+/// that falls back to the base artwork cannot hand back a translated one.
 #[derive(Default)]
 pub struct Textures {
-    loaded: HashMap<&'static str, TextureHandle>,
+    /// The language whose artwork replaces the base sprites, if the app is showing
+    /// one.
+    language: Option<&'static str>,
+    loaded: HashMap<(Option<&'static str>, &'static str), TextureHandle>,
 }
 
 impl Textures {
+    /// A cache for the artwork of the language the platform is set to.
+    pub fn detect() -> Self {
+        Self {
+            language: crate::language::detect(),
+            ..Self::default()
+        }
+    }
+
+    /// The language whose artwork this cache is resolving names to, if the app is
+    /// showing one. It is not only artwork that is localised: the app's own name is
+    /// too, and the screens ask for it through here.
+    pub fn language(&self) -> Option<&'static str> {
+        self.language
+    }
     /// Returns sprite `name`, decoding it on first use.
     ///
     /// Returns `None` for a name that is not in `Resources/`, which is a
@@ -144,17 +207,16 @@ impl Textures {
 
     /// Decodes `name` with `options` on first use, and keeps it for the app's life.
     fn load(&mut self, ctx: &Context, name: &str, options: TextureOptions) -> Option<Sprite> {
-        let Some(&index) = index().get(name) else {
+        let Some((source, bytes, (pivot_x, pivot_y))) = self.artwork(name) else {
             log_once(name);
             return None;
         };
-        let (key, bytes, (pivot_x, pivot_y)) = SPRITES[index];
 
-        let texture = match self.loaded.get(key) {
+        let texture = match self.loaded.get(&source) {
             Some(texture) => texture.clone(),
             None => {
-                let texture = ctx.load_texture(key, decode(key, bytes), options);
-                self.loaded.insert(key, texture.clone());
+                let texture = ctx.load_texture(name, decode(name, bytes), options);
+                self.loaded.insert(source, texture.clone());
                 texture
             }
         };
@@ -163,6 +225,23 @@ impl Textures {
             texture,
             origin: Vec2::new(pivot_x as f32, pivot_y as f32),
         })
+    }
+
+    /// The artwork `name` resolves to: the language's own if it carries one, else
+    /// the base sprite. The key it is cached under is returned with it, because the
+    /// same name means different bytes in different languages.
+    fn artwork(&self, name: &str) -> Option<Resolved> {
+        if let Some(language) = self.language
+            && let Some((_, sprites)) = LANGUAGE_SPRITES.iter().find(|(code, _)| *code == language)
+            && let Some(&(sprite, bytes, pivot)) =
+                sprites.iter().find(|(sprite, ..)| *sprite == name)
+        {
+            return Some(((Some(language), sprite), bytes, pivot));
+        }
+
+        let index = *index().get(name)?;
+        let (sprite, bytes, pivot) = SPRITES[index];
+        Some(((None, sprite), bytes, pivot))
     }
 
     /// Returns frame `tick` of animation `group`, wrapping around at its end.
@@ -218,4 +297,58 @@ fn decode(name: &str, bytes: &[u8]) -> ColorImage {
 
     let size = [decoded.width() as usize, decoded.height() as usize];
     ColorImage::from_rgba_unmultiplied(size, decoded.as_raw())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LANGUAGE_SPRITES, SPRITES, STAGE_BACKDROP, Textures, WINDOW_FRAME};
+
+    /// The artwork of `name` in the base tables.
+    fn base(name: &str) -> &'static [u8] {
+        let (_, bytes, _) = SPRITES
+            .iter()
+            .find(|(sprite, ..)| *sprite == name)
+            .expect("a base sprite");
+        bytes
+    }
+
+    #[test]
+    fn a_language_replaces_the_sprites_it_carries() {
+        for (language, translated) in LANGUAGE_SPRITES {
+            let textures = Textures {
+                language: Some(language),
+                ..Textures::default()
+            };
+
+            for (name, bytes, pivot) in *translated {
+                let (key, resolved, resolved_pivot) =
+                    textures.artwork(name).expect("a translated sprite");
+
+                assert_eq!(key, (Some(*language), *name));
+                assert_eq!(resolved, *bytes, "{language}/{name} is the translation");
+                assert_eq!(resolved_pivot, *pivot);
+            }
+        }
+    }
+
+    #[test]
+    fn everything_else_comes_from_the_base_artwork() {
+        let korean = Textures {
+            language: Some("kr"),
+            ..Textures::default()
+        };
+
+        // The backdrop is not translated, so Korean draws the base artwork — and
+        // caches it under the base key, not under Korean's.
+        let (key, bytes, _) = korean.artwork(STAGE_BACKDROP).expect("the backdrop");
+        assert_eq!(key, (None, STAGE_BACKDROP));
+        assert_eq!(bytes, base(STAGE_BACKDROP));
+
+        // And with no language at all, everything does.
+        let (key, bytes, _) = Textures::default()
+            .artwork(WINDOW_FRAME)
+            .expect("the window frame");
+        assert_eq!(key, (None, WINDOW_FRAME));
+        assert_eq!(bytes, base(WINDOW_FRAME));
+    }
 }

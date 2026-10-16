@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <title>Violetta Lie Detector Simulator</title>
 
+    <!-- The item's own icon, which is what the browser tab shows. Trunk copies it
+         into the dist dir under its own name, so the link is relative and still
+         resolves when the app is served from a subdirectory. -->
+    <link data-trunk rel="copy-file" href="Resources/2190000.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="2190000.png" />
+
     <!-- Build the Rust crate in ./violetta_lie_detector_sim into a wasm module. -->
     <link data-trunk rel="rust" href="violetta_lie_detector_sim/Cargo.toml" />
     <!-- Base URL that other asset URLs are built from; filled in by trunk. -->
