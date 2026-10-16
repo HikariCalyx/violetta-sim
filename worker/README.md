@@ -6,7 +6,8 @@ the Cloudflare dashboard lists and what an API token scoped to one Worker would 
 
 A new member is muted, given 10 minutes in total, and can only talk after finishing the
 game in the bot's PM. Running out of time, or failing all three attempts, removes them
-from the chat — they may rejoin and try again.
+from the chat — they may rejoin and try again. The removal lifts the mute as well as the
+ban, so nothing is left behind that would keep them quiet or list them as restricted.
 
 The arrival notice greets them by name with a **Start** button into the bot, and the
 announcement that they joined — along with anything they manage to send before the mute

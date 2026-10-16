@@ -281,7 +281,7 @@ export class VerificationSession extends DurableObject<Env> {
     const left = attemptsLeft();
     if (left <= 0) {
       for (const entry of Object.values(s.chats)) {
-        if (entry.state === 'restricted') await this.evict(s, entry);
+        if (entry.state === 'restricted') await this.evict(s, entry, 'tries');
       }
       await this.close(s, 'failed');
       return { ok: true, correct: false, status: s.status, attempts: s.attempts, attemptsLeft: 0 };
@@ -334,7 +334,7 @@ export class VerificationSession extends DurableObject<Env> {
 
     const now = Date.now();
     for (const entry of Object.values(s.chats)) {
-      if (entry.state === 'restricted' && entry.deadline <= now) await this.evict(s, entry);
+      if (entry.state === 'restricted' && entry.deadline <= now) await this.evict(s, entry, 'expired');
     }
     await this.save(s);
     await this.arm(s);
@@ -399,8 +399,34 @@ export class VerificationSession extends DurableObject<Env> {
   /**
    * Kick a member but let them come back and try again: a plain ban blocks every invite
    * link, so it is always ban followed by an immediate unban.
+   *
+   * `reason` is what tells the two endings apart. Running out of tries and running out of
+   * time both arrive here, and from the chat they look identical: a member disappears.
    */
-  private async evict(s: SessionState, entry: ChatEntry): Promise<void> {
+  private async evict(
+    s: SessionState,
+    entry: ChatEntry,
+    reason: 'expired' | 'tries',
+  ): Promise<void> {
+    console.info('removing a member from a chat', {
+      chatId: entry.chatId,
+      userId: s.userId,
+      reason,
+      attempts: s.attempts,
+      secondsLeft: Math.round((entry.deadline - Date.now()) / 1000),
+    });
+
+    // The mute is lifted FIRST, while the member is still in the chat and the call is
+    // certain to be accepted. It is the one record these two calls cannot clean up: the
+    // restriction carries no `until_date`, so it is stored as "restricted forever", and a
+    // kicked member left holding one goes on showing up under the chat's restricted/removed
+    // entries — and would come back still muted if it outlived the session.
+    await tryCallTelegram(this.env, 'restrictChatMember', {
+      chat_id: entry.chatId,
+      user_id: s.userId,
+      permissions: FULL_PERMISSIONS,
+    });
+
     await tryCallTelegram(this.env, 'banChatMember', {
       chat_id: entry.chatId,
       user_id: s.userId,
@@ -413,9 +439,14 @@ export class VerificationSession extends DurableObject<Env> {
     });
     await this.dropNotice(entry);
     entry.state = 'removed';
+
+    const why =
+      reason === 'expired'
+        ? `the ${MUTE_SECONDS / 60} minutes were up`
+        : `none of the ${MAX_ATTEMPTS} tries were completed`;
     await tryCallTelegram(this.env, 'sendMessage', {
       chat_id: s.userId,
-      text: `You were removed from “${entry.title}” because verification was not completed. You can rejoin and try again.`,
+      text: `You were removed from “${entry.title}”: ${why}. You can rejoin and try again.`,
     });
   }
 
