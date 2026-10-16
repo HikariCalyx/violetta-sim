@@ -8,7 +8,7 @@ import type {
   TgUpdate,
   TgUser,
 } from './telegram';
-import { MAX_ATTEMPTS, MUTE_SECONDS, callTelegram, displayName, mmss } from './telegram';
+import { MAX_ATTEMPTS, MUTE_SECONDS, callTelegram, displayName, mmss, tryCallTelegram } from './telegram';
 import type { ChatRegistry } from './registry';
 import type { UserIndex } from './user-index';
 
@@ -74,6 +74,53 @@ async function onMemberLeft(env: Env, chatId: number, userId: number): Promise<v
   const active = await indexStub(env, userId).active();
   if (!active) return;
   await sessionStub(env, active.sessionId).memberLeft(chatId);
+}
+
+/**
+ * Handles one message in a group: the arrival notice, and anything a still-muted member
+ * managed to send.
+ *
+ * Both need the bot to be able to SEE the message, and to delete it. Telegram withholds
+ * ordinary group messages from a bot that is in privacy mode, so that mode is turned off
+ * (see the README), and deleting needs the bot's `can_delete_messages` right.
+ */
+async function onGroupMessage(env: Env, msg: TgMessage): Promise<void> {
+  const from = msg.from;
+  // Only a member with a live verification can be muted, and that is almost nobody — so
+  // this single lookup is the whole cost of the bot for an ordinary message.
+  const muted = from !== undefined && !from.is_bot && (await isMuted(env, msg.chat.id, from.id));
+
+  if (msg.new_chat_members?.length) {
+    if (!(await registryStub(env).get(msg.chat.id))) return;
+    // Fallback for chats that do not deliver `chat_member` updates. `ensure` is
+    // idempotent, so both paths firing for one join cannot double-mute or double-post.
+    for (const member of msg.new_chat_members) await onMemberJoined(env, msg.chat, member);
+    // "X joined the group": the trail of who arrived (and later, who was removed) is not
+    // something the group needs to keep, and it is the first thing to clear for the
+    // member who has just arrived.
+    await tryCallTelegram(env, 'deleteMessage', {
+      chat_id: msg.chat.id,
+      message_id: msg.message_id,
+    });
+    return;
+  }
+
+  if (muted) {
+    // Only reachable between joining and the mute landing: once the restriction is on,
+    // the member cannot send anything for this to delete. Deliberately uncached — a cache
+    // would keep deleting the messages of somebody who has just passed.
+    await tryCallTelegram(env, 'deleteMessage', {
+      chat_id: msg.chat.id,
+      message_id: msg.message_id,
+    });
+  }
+}
+
+/** Whether `userId` is currently muted in `chatId` by a live verification. */
+async function isMuted(env: Env, chatId: number, userId: number): Promise<boolean> {
+  const active = await indexStub(env, userId).active();
+  if (!active) return false;
+  return sessionStub(env, active.sessionId).mutedIn(chatId);
 }
 
 async function onChatMember(env: Env, update: TgChatMemberUpdated): Promise<void> {
@@ -226,19 +273,26 @@ export async function dispatch(env: Env, update: TgUpdate): Promise<void> {
     }
 
     const msg = update.message;
-    if (!msg?.from || msg.from.is_bot) return;
+    if (!msg) return;
 
     if (msg.chat.type === 'private') {
-      if (msg.text?.startsWith('/start')) await onPrivateStart(env, msg.from, msg.chat.id);
+      if (msg.from && msg.text?.startsWith('/start')) await onPrivateStart(env, msg.from, msg.chat.id);
       return;
     }
+
+    // The service message that announces an arrival is also the only update carrying the
+    // id needed to delete it, so it is handled before the general group path.
     if (msg.new_chat_members?.length) {
-      // Fallback for chats that do not deliver `chat_member`. `ensure` is idempotent, so
-      // both paths firing for one join cannot double-mute or double-post.
-      for (const member of msg.new_chat_members) await onMemberJoined(env, msg.chat, member);
+      await onGroupMessage(env, msg);
       return;
     }
-    if (msg.text?.startsWith('/verify_here')) await onVerifyHere(env, msg);
+
+    if (!msg.from || msg.from.is_bot) return;
+    if (msg.text?.startsWith('/verify_here')) {
+      await onVerifyHere(env, msg);
+      return;
+    }
+    await onGroupMessage(env, msg);
   } catch (err) {
     console.error('update failed', update.update_id, err instanceof Error ? err.message : err);
   }

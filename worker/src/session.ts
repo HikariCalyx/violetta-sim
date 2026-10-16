@@ -7,6 +7,7 @@ import {
   MUTED_PERMISSIONS,
   MUTE_SECONDS,
   callTelegram,
+  escapeHtml,
   mention,
   tryCallTelegram,
 } from './telegram';
@@ -161,7 +162,7 @@ export class VerificationSession extends DurableObject<Env> {
     }
 
     try {
-      entry.noticeId = await this.notice(userId, userName, chatId);
+      entry.noticeId = await this.notice(userId, userName, chatId, title);
     } catch (err) {
       // The notice is only a courtesy. Letting it throw here would leave the member muted
       // with no persisted session and no alarm — i.e. muted forever.
@@ -393,24 +394,41 @@ export class VerificationSession extends DurableObject<Env> {
     }
   }
 
-  private async notice(userId: number, userName: string, chatId: number): Promise<number | null> {
+  private async notice(
+    userId: number,
+    userName: string,
+    chatId: number,
+    title: string,
+  ): Promise<number | null> {
     const text =
-      `${mention(userId, userName)} — please verify before chatting:\n\n` +
-      '1. Tap the button below, then press <b>START</b> in the bot (or send /start).\n' +
-      '2. Finish the mini-game there.\n\n' +
-      `You have ${MUTE_SECONDS / 60} minutes and ${MAX_ATTEMPTS} tries.`;
+      `Hi ${mention(userId, userName)}, welcome to ${escapeHtml(title)}!\n\n` +
+      'To chat in this group, please play the minigame below.';
     const result = await callTelegram<{ message_id: number }>(this.env, 'sendMessage', {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
       // A URL button is the only way to open a PM: Telegram never lets a bot message
-      // someone who has not started it. With no payload, this only shows the START
-      // button to members who never talked to the bot — hence the wording above.
+      // someone who has not started it. With no payload, this shows the START button to
+      // members who never talked to the bot, and just opens the chat for those who have
+      // — they have to send /start themselves in that case.
       reply_markup: {
-        inline_keyboard: [[{ text: 'Verify', url: `https://t.me/${this.env.BOT_USERNAME}` }]],
+        inline_keyboard: [[{ text: 'Start', url: `https://t.me/${this.env.BOT_USERNAME}` }]],
       },
     });
     return result.message_id;
+  }
+
+  /**
+   * Whether this session is still holding the member muted in `chatId`.
+   *
+   * Used to tidy up after a join: anything a member manages to send before the mute
+   * lands is deleted, and this is what decides whether a given message falls in that
+   * window.
+   */
+  async mutedIn(chatId: number): Promise<boolean> {
+    const s = await this.read();
+    if (!s || s.status !== 'open') return false;
+    return s.chats[String(chatId)]?.state === 'restricted';
   }
 }

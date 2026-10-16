@@ -8,6 +8,14 @@ A new member is muted, given 10 minutes in total, and can only talk after finish
 game in the bot's PM. Running out of time, or failing all three attempts, removes them
 from the chat — they may rejoin and try again.
 
+The arrival notice greets them by name with a **Start** button into the bot, and the
+announcement that they joined — along with anything they manage to send before the mute
+lands — is deleted again.
+
+**Nothing at all happens in a chat until an admin has run `/verify_here on` in it and the
+bot has confirmed it.** An unregistered chat is a complete no-op, which is worth knowing
+before debugging a silent bot.
+
 ## How it fits together
 
 | Piece | Where | Why |
@@ -26,7 +34,9 @@ attempt counter is shared — one game, three tries.
 
 ## Setup
 
-1. Create the bot with @BotFather and copy its token.
+1. Create the bot with @BotFather and copy its token. Also send it `/setprivacy` →
+   **Disable**: Telegram withholds ordinary group messages from a bot that is in privacy
+   mode, and the bot cannot delete what it never sees.
 2. `cd worker && npm install`
 3. Register the secrets (they must never land in `wrangler.jsonc`). **The GitHub Actions
    workflow does this for you** — see below — so this is only for a hand deploy:
@@ -110,6 +120,12 @@ removed" instead of breaking. Only an unknown session id is a 404.
   comes back in the middle of an attempt cannot replay the rounds it already scored — and
   the reveal that told the player which character to follow is gone. The page therefore
   reports the interrupted round as a miss and starts a fresh attempt with a fresh shuffle.
+- **Deleting a member's messages needs the bot to see them.** Telegram withholds ordinary
+  group messages from a bot in privacy mode, so with privacy on the bot still mutes and
+  posts its notice but cannot clear anything sent in the moment before the mute landed.
+  `/setprivacy` → Disable is what fixes that. Deleting needs `can_delete_messages` too.
+- **Someone who is already in the chat is not affected.** Gating happens on a join, so a
+  member who joined while the bot was misconfigured stays unmuted until they rejoin.
 - **Making the Worker authoritative on timing** (rejecting suspiciously fast clicks) is
   not implemented: the DO records `elapsedMs` per pick but does not act on it yet.
 - Local `wrangler dev` cannot receive Telegram updates — point a webhook at a tunnel, or
