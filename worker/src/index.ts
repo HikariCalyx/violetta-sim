@@ -178,15 +178,26 @@ const isSlot = (n: number) => Number.isInteger(n) && n >= 0 && n <= 4;
  * healthy otherwise — it only fails once a real member joins, as a mute notice whose
  * button goes nowhere. So report which pieces are actually there.
  *
- * Booleans for the secrets (never their values), and the two public values verbatim:
- * both are already visible in every link the bot hands out.
+ * `Boolean(env.BOT_TOKEN)` is not enough to answer that: an EMPTY secret is defined but
+ * falsy, so a secret pushed with no value reads exactly like a missing one and the
+ * difference is the entire diagnosis. Hence three states rather than a boolean.
+ *
+ * Presence only, never a value — and the two public values below are already visible in
+ * every link the bot hands out.
  */
+function binding(value: string | undefined): 'set' | 'empty' | 'missing' {
+  if (value === undefined) return 'missing';
+  // Whitespace alone counts as empty: a secret pasted with a trailing newline is spliced
+  // into every API URL and cannot work, so it must not read as a healthy 'set' either.
+  return value.trim().length === 0 ? 'empty' : 'set';
+}
+
 function health(env: Env): Record<string, unknown> {
   return {
     ok: true,
     config: {
-      botToken: Boolean(env.BOT_TOKEN),
-      webhookSecret: Boolean(env.WEBHOOK_SECRET),
+      botToken: binding(env.BOT_TOKEN),
+      webhookSecret: binding(env.WEBHOOK_SECRET),
       botUsername: env.BOT_USERNAME ?? null,
       verifyOrigin: env.VERIFY_ORIGIN ?? null,
     },

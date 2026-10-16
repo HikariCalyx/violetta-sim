@@ -114,7 +114,14 @@ export async function callTelegram<T>(
   method: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
-  const res = await fetch(`${API}/bot${env.BOT_TOKEN}/${method}`, {
+  // Trimmed: a secret pasted with a trailing newline would otherwise be spliced into the
+  // URL, where it fails as a 404 that looks like a wrong token.
+  const token = env.BOT_TOKEN?.trim() ?? '';
+  if (!token) {
+    throw new Error('BOT_TOKEN is empty — set the Worker secret before the bot can answer');
+  }
+
+  const res = await fetch(`${API}/bot${token}/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),

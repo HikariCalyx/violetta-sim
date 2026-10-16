@@ -18,7 +18,6 @@
 # idempotent, so the repository stays the single source of truth for what the Worker
 # holds. One bot can only have one webhook, though, so a second Worker deployed for
 # the same bot would take it over.
-
 name: Deploy the verification Worker
 
 on:
@@ -142,27 +141,38 @@ jobs:
         # assets directory (`../dist`) are resolved relative to it.
         run: npx wrangler deploy
 
-      # Pushed rather than set by hand, so the repo stays the source of truth. `printf` and
-      # not `echo`: a trailing newline would turn every API URL into
-      # /bot123:AA\n/sendMessage, which fails with a 404 that looks like a wrong token.
+      # Pushed from a file rather than through `secret put`'s prompt. A piped value goes
+      # through a line-based reader, and a secret that arrives EMPTY is indistinguishable
+      # from a missing one from inside the Worker (`Boolean("")` is false) while the
+      # command still reports success — which is exactly how this step once looked fine
+      # while the Worker had nothing. jq writes the JSON so any character survives it.
       - name: Push the bot secrets onto the Worker
         working-directory: worker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
-          printf '%s' "$BOT_TOKEN" | npx wrangler secret put BOT_TOKEN
-          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put WEBHOOK_SECRET
+          jq -n --arg bot "$BOT_TOKEN" --arg hook "$WEBHOOK_SECRET" \
+            '{BOT_TOKEN: $bot, WEBHOOK_SECRET: $hook}' > "$RUNNER_TEMP/secrets.json"
+          npx wrangler secret bulk "$RUNNER_TEMP/secrets.json"
+          # Names only — wrangler never prints a value back. This is what makes a silent
+          # push visible in the job log, which is how this step once looked fine while the
+          # Worker had nothing.
+          npx wrangler secret list
 
-      # The Worker reports what it actually holds: booleans for the secrets, and the two
-      # public values verbatim. This catches a secret that did not land, and an origin that
-      # no longer matches worker/wrangler.jsonc — before the webhook is pointed at it.
+      # The Worker reports what it actually holds: one of 'set', 'empty' or 'missing' for
+      # the secrets, and the two public values verbatim. This catches a secret that never
+      # landed, a secret that landed with no value, and an origin that no longer matches
+      # worker/wrangler.jsonc — before the webhook is pointed at any of it.
       - name: Check the deployed configuration
         run: |
           health=$(curl -fsS "$VERIFY_ORIGIN/api/health")
           echo "$health"
-          echo "$health" | jq -e '.config.botToken and .config.webhookSecret' > /dev/null \
-            || { echo "::error::The Worker reports a missing BOT_TOKEN or WEBHOOK_SECRET."; exit 1; }
+          echo "$health" | jq -e '.config.botToken == "set" and .config.webhookSecret == "set"' > /dev/null \
+            || {
+              echo "::error::The Worker reports BOT_TOKEN=$(echo "$health" | jq -r .config.botToken) and WEBHOOK_SECRET=$(echo "$health" | jq -r .config.webhookSecret). 'missing' means it never reached the Worker; 'empty' means it was pushed with no value."
+              exit 1
+            }
           echo "$health" | jq -e --arg origin "$VERIFY_ORIGIN" '.config.verifyOrigin == $origin' > /dev/null \
             || { echo "::error::$VERIFY_ORIGIN and VERIFY_ORIGIN in worker/wrangler.jsonc disagree."; exit 1; }
 
