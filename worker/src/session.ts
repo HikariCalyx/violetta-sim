@@ -10,6 +10,7 @@ import {
   escapeHtml,
   mention,
   tryCallTelegram,
+  type TgChatMember,
 } from './telegram';
 
 export type ChatEntryState =
@@ -408,19 +409,11 @@ export class VerificationSession extends DurableObject<Env> {
     entry: ChatEntry,
     reason: 'expired' | 'tries',
   ): Promise<void> {
-    console.info('removing a member from a chat', {
-      chatId: entry.chatId,
-      userId: s.userId,
-      reason,
-      attempts: s.attempts,
-      secondsLeft: Math.round((entry.deadline - Date.now()) / 1000),
-    });
-
     // The mute is lifted FIRST, while the member is still in the chat and the call is
-    // certain to be accepted. It is the one record these two calls cannot clean up: the
-    // restriction carries no `until_date`, so it is stored as "restricted forever", and a
-    // kicked member left holding one goes on showing up under the chat's restricted/removed
-    // entries — and would come back still muted if it outlived the session.
+    // certain to be accepted. It is the one record the kick cannot clean up: the restriction
+    // carries no `until_date`, so it is stored as "restricted forever", and a kicked member
+    // left holding one goes on showing up under the chat's restricted/removed entries — and
+    // would come back still muted if it outlived the session.
     await tryCallTelegram(this.env, 'restrictChatMember', {
       chat_id: entry.chatId,
       user_id: s.userId,
@@ -432,13 +425,41 @@ export class VerificationSession extends DurableObject<Env> {
       user_id: s.userId,
       revoke_messages: false,
     });
+
+    // Deliberately NOT `only_if_banned: true`. If the ban has not registered by the moment
+    // this arrives, that flag turns the call into a no-op and leaves the member banned for
+    // good — able to rejoin nowhere, which is the opposite of what a kick is for. Unbanning
+    // somebody who is not banned does nothing at all, so the flag buys nothing either.
     await tryCallTelegram(this.env, 'unbanChatMember', {
       chat_id: entry.chatId,
       user_id: s.userId,
-      only_if_banned: true,
     });
+
+    // Read back, because a member left banned is invisible from inside the Worker: the chat
+    // simply never sees them again. A second unban is harmless, and is what clears the case
+    // above if the first one really was swallowed.
+    let status = await this.memberStatus(entry.chatId, s.userId);
+    if (status === 'kicked') {
+      await tryCallTelegram(this.env, 'unbanChatMember', {
+        chat_id: entry.chatId,
+        user_id: s.userId,
+      });
+      status = await this.memberStatus(entry.chatId, s.userId);
+    }
+
     await this.dropNotice(entry);
     entry.state = 'removed';
+
+    console.info('removed a member from a chat', {
+      chatId: entry.chatId,
+      userId: s.userId,
+      reason,
+      attempts: s.attempts,
+      secondsLeft: Math.round((entry.deadline - Date.now()) / 1000),
+      // `left` is the intended end state — out of the chat, free to rejoin. `kicked` means
+      // the unban did not take, and `member`/`restricted` means the kick itself did not.
+      statusAfter: status,
+    });
 
     const why =
       reason === 'expired'
@@ -448,6 +469,28 @@ export class VerificationSession extends DurableObject<Env> {
       chat_id: s.userId,
       text: `You were removed from “${entry.title}”: ${why}. You can rejoin and try again.`,
     });
+  }
+
+  /**
+   * A member's status in a chat, or `null` when Telegram will not say.
+   *
+   * Only used to confirm that a removal left the member able to come back.
+   */
+  private async memberStatus(chatId: number, userId: number): Promise<string | null> {
+    try {
+      const member = await callTelegram<TgChatMember>(this.env, 'getChatMember', {
+        chat_id: chatId,
+        user_id: userId,
+      });
+      return member.status;
+    } catch (err) {
+      console.error(
+        'could not read a member status',
+        { chatId, userId },
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   private async dropNotice(entry: ChatEntry): Promise<void> {
