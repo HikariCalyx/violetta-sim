@@ -92,6 +92,9 @@ export type PickResult =
       attempts?: number;
       attemptsLeft: number;
       roundIndex?: number;
+      /** The next attempt's shuffle, sent when this pick ended an attempt. */
+      rounds?: number[][];
+      special?: number;
     };
 
 /**
@@ -188,7 +191,13 @@ export class VerificationSession extends DurableObject<Env> {
     };
   }
 
-  /** One click. The DO, not the page, decides whether the attempt is over. */
+  /**
+   * One click, or a round the player let run out of time on.
+   *
+   * `slot` is 0 for "no answer": the page reports the round it timed out on, so the
+   * attempt is scored either way instead of leaving one open that nothing would close.
+   * The DO, not the page, decides whether that ends the attempt or the whole session.
+   */
   async pick(
     roundIndex: number,
     slot: number,
@@ -216,15 +225,28 @@ export class VerificationSession extends DurableObject<Env> {
 
     s.attempts += 1;
     s.roundIndex = 0;
-    if (attemptsLeft() <= 0) {
+    const left = attemptsLeft();
+    if (left <= 0) {
       for (const entry of Object.values(s.chats)) {
         if (entry.state === 'restricted') await this.evict(s, entry);
       }
       await this.close(s, 'failed');
-    } else {
-      await this.save(s);
+      return { ok: true, correct: false, status: s.status, attempts: s.attempts, attemptsLeft: 0 };
     }
-    return { ok: true, correct: false, status: s.status, attempts: s.attempts, attemptsLeft: attemptsLeft() };
+
+    // A new shuffle for the next attempt: replaying one the member has already been
+    // scored on would hand them the answers for their remaining tries.
+    s.set = makeRounds();
+    await this.save(s);
+    return {
+      ok: true,
+      correct: false,
+      status: s.status,
+      attempts: s.attempts,
+      attemptsLeft: left,
+      rounds: s.set.rounds.map((round) => round.order),
+      special: s.set.special,
+    };
   }
 
   /** The member left of their own accord: nothing to kick, just stop tracking them. */

@@ -24,6 +24,7 @@ violetta_lie_detector_sim/ The Rust crate
     src/main.rs            Native + wasm entry points
     src/app.rs             App state and the screen switch
     src/assets.rs          Sprite lookup and the texture cache
+    src/net.rs             The verification session, and the shuffle the Worker scores
     src/screens/start.rs   Title screen
     src/screens/result.rs  Success / Failed screen
     src/screens/game/      The lie detector window
@@ -93,6 +94,10 @@ to it, with the title, a *Start* button, and the photograph's credit in the
 bottom-left corner: “Background Image Credit: ” and the name *Somacguffin*, which
 links to [the video the still came from](https://www.youtube.com/watch?v=K7MTgHeFrYc).
 - **Game** – the lie detector window.
+- **Verification** – not a screen of its own: opened as `…/telegram?session=<uuid>` the app
+reads that session from the Worker, counts its clock down in the top-left corner, shuffles
+the characters the way the Worker scored them, and reports each pick. A *time left* of zero
+ends the page where it stands.
 
 ### How the window is composed
 

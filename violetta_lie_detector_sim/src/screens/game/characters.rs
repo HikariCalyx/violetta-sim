@@ -168,6 +168,45 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
     }
 }
 
+/// Sends every character to the place the Worker picked out for it, through a
+/// couple of random ones on the way.
+///
+/// This is [`shuffle`] with the destinations given rather than drawn: the Worker is
+/// what scores the pick, so it has to be the one that decided where everybody ends
+/// up. The way there stays the local generator's business — nothing about it is
+/// scored — and a character handed its own place back still walks out to its
+/// waypoints and back, so the stage never sits still.
+///
+/// `destinations[i]` is where character `i` ends up, in zero-based slots.
+pub fn shuffle_to(
+    characters: &mut [Character; layout::ANSWER_COUNT],
+    rng: &mut Rng,
+    destinations: &[usize],
+) {
+    let mut rows = layout::WALK_ROWS;
+    rng.shuffle(&mut rows);
+
+    for (index, character) in characters.iter_mut().enumerate() {
+        let start = character.spot();
+        let slot = destinations.get(index).copied().unwrap_or(index) % layout::ANSWER_COUNT;
+        let destination = (slot, layout::FRONT_ROW);
+        let row = rows[index];
+        let first = waypoint(row, &[start.0, destination.0], rng);
+        let second = waypoint(row, &[first.0], rng);
+        character.path = [start, first, second, destination];
+    }
+}
+
+/// Marks which character is the one to follow.
+///
+/// The Worker decides this — it is what it scores a pick against — so the local
+/// spawn only ever puts a placeholder here.
+pub fn set_special(characters: &mut [Character; layout::ANSWER_COUNT], special: usize) {
+    for (index, character) in characters.iter_mut().enumerate() {
+        character.special = index == special;
+    }
+}
+
 /// A place for a character to walk through: its own row, in a slot outside
 /// `avoid`, so that the leg that reaches it really does cross the stage.
 fn waypoint(row: usize, avoid: &[usize], rng: &mut Rng) -> Spot {

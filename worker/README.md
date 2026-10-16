@@ -92,7 +92,7 @@ The workflow and the Pages one both build the bundle, with different base paths 
 | `POST /telegram/webhook` | Telegram only. Requires the `X-Telegram-Bot-Api-Secret-Token` header; answers `ok` before doing the work |
 | `GET /telegram?session=<uuid>` | The game page (the same bundle as `/`) |
 | `GET /api/session/<uuid>/state` | `status`, `deadline`, `attemptsLeft`, the shuffle, and `serverNow` |
-| `POST /api/session/<uuid>/pick` | `{ roundIndex, slot, elapsedMs }` — the only write the browser makes |
+| `POST /api/session/<uuid>/pick` | `{ roundIndex, slot, elapsedMs }` — the only write the browser makes. A `slot` of 0 means "ran out of time": it scores as a miss instead of leaving the attempt open |
 | `GET /api/health` | Liveness |
 
 `state` returns the session's outcome after it closes, so the page can say "you were
@@ -106,13 +106,31 @@ removed" instead of breaking. Only an unknown session id is a 404.
 - **The session UUID is a bearer token.** Anyone the member forwards the link to can play
   on their behalf. It is unguessable, and PM-only, which is the same trust level as the
   member handing over their phone.
+- **Reloading mid-attempt costs a try.** The round counter lives in the DO, so a page that
+  comes back in the middle of an attempt cannot replay the rounds it already scored — and
+  the reveal that told the player which character to follow is gone. The page therefore
+  reports the interrupted round as a miss and starts a fresh attempt with a fresh shuffle.
 - **Making the Worker authoritative on timing** (rejecting suspiciously fast clicks) is
   not implemented: the DO records `elapsedMs` per pick but does not act on it yet.
 - Local `wrangler dev` cannot receive Telegram updates — point a webhook at a tunnel, or
   POST a captured update at it yourself (see `.dev.vars.example`).
 
-## Next step
+## The page
 
-The Rust game still generates its own shuffle (`src/screens/game/rng.rs`) and never talks
-to the server. Wiring it up means: read `?session=`, poll `state` once for the deadline and
-the per-round `order`, drive the countdown label from it, and POST a pick per round.
+`/telegram?session=<uuid>` is the game with a session attached. It reads the session on
+load — and again every 30 seconds — and then:
+
+- shows the time left and the tries remaining in the top-left corner, counted on the
+  **Worker's** clock: a snapshot carries `serverNow`, which the page anchors against its own
+  monotonic clock, so a device whose clock is wrong still counts down correctly, and a tab
+  that was in the background catches up by itself;
+- plays the shuffle the Worker handed out (`rounds` and `special`) rather than its own, so
+  the picks it scores are the ones the player actually saw;
+- reports every pick, including the ones the player never made — running out of time posts
+  slot 0, because it is the Worker that scores the attempt;
+- names the outcome in the Worker's terms: *Verified*, *N tries left*, *Out of tries*,
+  *Time is up*, with *Try Again* only while the session still has tries.
+
+`/` (no session) remains the plain simulator: all of the above is skipped there, and that is
+also what the desktop build does — `src/net.rs` gives the non-wasm target a transport that
+does nothing, so `cargo run` stays a harness for the UI.

@@ -26,9 +26,13 @@ mod rng;
 mod stage;
 mod widgets;
 
-use egui::{CentralPanel, Color32, Context, Frame, Rect, Ui};
+use egui::{
+    Align2, Area, CentralPanel, Color32, Context, CornerRadius, Frame, Id, Margin, Rect, RichText,
+    Ui,
+};
 
 use crate::assets::{self, Textures};
+use crate::net::{Plan, Verification};
 use crate::screens::{BACKGROUND, Outcome};
 
 use characters::{Character, Pose};
@@ -128,6 +132,10 @@ pub struct GameScreen {
     verdicts: [bool; ANSWERS],
     /// Which round is being played.
     round: usize,
+    /// The shuffle the Worker handed out, when this page is a verification: one
+    /// destination slot per character, per round. Without it every round shuffles
+    /// itself, which is what the plain simulator does.
+    orders: Option<Vec<Vec<usize>>>,
     /// Set once the last banner has played, which ends the game.
     done: Option<Outcome>,
 }
@@ -145,6 +153,7 @@ impl GameScreen {
             picks: [None; ANSWERS],
             verdicts: [false; ANSWERS],
             round: 0,
+            orders: None,
             done: None,
         }
     }
@@ -152,6 +161,30 @@ impl GameScreen {
     /// Starts a new game: a fresh set of characters, and the artwork decoded
     /// while the countdown is on screen.
     pub fn restart(&mut self, ctx: &Context, textures: &mut Textures, time: f64) {
+        self.orders = None;
+        self.begin(ctx, textures, time);
+    }
+
+    /// Starts a new game of a verification, following the Worker's shuffle.
+    ///
+    /// The characters are still laid out by the local generator — where they stand
+    /// before the first swap is not scored, and drawing it fresh keeps the reveal
+    /// different every time — but which of them is special, and where each one ends
+    /// up, come from the Worker, because those are what it scores a pick against.
+    pub fn restart_verified(
+        &mut self,
+        ctx: &Context,
+        textures: &mut Textures,
+        time: f64,
+        plan: &Plan,
+    ) {
+        self.begin(ctx, textures, time);
+        characters::set_special(&mut self.characters, plan.special);
+        self.orders = Some(plan.orders.clone());
+    }
+
+    /// The part of a new game that both entry points share.
+    fn begin(&mut self, ctx: &Context, textures: &mut Textures, time: f64) {
         self.rng = Rng::new(rng::seed(time));
         self.characters = characters::spawn(&mut self.rng);
         self.picks = [None; ANSWERS];
@@ -165,9 +198,34 @@ impl GameScreen {
 
     /// Draws the screen and handles input, returning the outcome once the game
     /// has played its last banner.
-    pub fn show(&mut self, ui: &mut Ui, textures: &mut Textures) -> Option<Outcome> {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        textures: &mut Textures,
+        verification: Option<&Verification>,
+    ) -> Option<Outcome> {
         let time = ui.input(|input| input.time);
-        self.advance(time);
+
+        // The clock is the Worker's and it does not pause for the game: once it runs
+        // out the member has already been removed, so the page stops where it stands.
+        // A game that has already made up its mind is left alone, so that the last
+        // banner — the game's own feedback — is never cut off mid-animation.
+        let finishing = self.done.is_some()
+            || self.round >= ANSWERS
+            || matches!(self.phase, Phase::Success | Phase::Failed);
+        if !finishing {
+            if let Some(verification) = verification {
+                let expired = verification.remaining(time) <= 0.0
+                    || verification
+                        .snapshot()
+                        .is_some_and(|snapshot| snapshot.status == "expired");
+                if expired {
+                    return Some(Outcome::Expired);
+                }
+            }
+        }
+
+        self.advance(time, verification);
         // Every phase animates, so keep the frames coming.
         ui.ctx().request_repaint();
 
@@ -195,15 +253,19 @@ impl GameScreen {
                 }
                 self.draw_readout(ui, textures, &stage);
                 self.draw_timer(ui, textures, &stage, time);
-                self.draw_buttons(ui, textures, &stage, time, clicked);
+                self.draw_buttons(ui, textures, &stage, time, clicked, verification);
                 self.draw_banner_animation(ui, textures, &stage, time);
             });
+
+        if let Some(verification) = verification {
+            draw_verification(ui, verification, time);
+        }
 
         self.done
     }
 
     /// Moves the round along, phase by phase.
-    fn advance(&mut self, time: f64) {
+    fn advance(&mut self, time: f64, verification: Option<&Verification>) {
         let elapsed = time - self.phase_started;
 
         match self.phase {
@@ -240,7 +302,12 @@ impl GameScreen {
             Phase::Pick => {
                 if elapsed >= ANSWER_SECONDS {
                     // Running out of time ends the game where it stands: the rounds
-                    // that were left are never played.
+                    // that were left are never played. The Worker counts it as a failed
+                    // attempt (slot zero is "no answer"), because the attempt it holds
+                    // open would otherwise never be closed.
+                    if let Some(verification) = verification {
+                        verification.report_pick(self.round, 0, elapsed * 1000.0);
+                    }
                     self.enter(Phase::MaskOff, time);
                 }
             }
@@ -276,16 +343,30 @@ impl GameScreen {
         self.phase = phase;
         self.phase_started = time;
         if phase == Phase::Swap {
-            characters::shuffle(&mut self.characters, &mut self.rng);
+            match &self.orders {
+                // A verification plays the shuffle the Worker scored the pick against.
+                Some(orders) => {
+                    let round = self.round.min(orders.len().saturating_sub(1));
+                    characters::shuffle_to(&mut self.characters, &mut self.rng, &orders[round]);
+                }
+                None => characters::shuffle(&mut self.characters, &mut self.rng),
+            }
         }
     }
 
     /// Records the position the player picked for the current round and moves on
     /// to the next one.
-    fn pick(&mut self, position: usize, time: f64) {
+    fn pick(&mut self, position: usize, time: f64, verification: Option<&Verification>) {
         let special = characters::special_slot(&self.characters);
         self.verdicts[self.round] = position == special;
         self.picks[self.round] = Some(position as u8 + 1);
+
+        // The Worker scores this, and its answer is the one that decides whether the
+        // member is allowed to talk in the group again.
+        if let Some(verification) = verification {
+            let elapsed = time - self.phase_started;
+            verification.report_pick(self.round, position as u8 + 1, elapsed * 1000.0);
+        }
 
         self.round += 1;
         if self.round == ANSWERS {
@@ -552,6 +633,7 @@ impl GameScreen {
         stage: &Stage,
         time: f64,
         clicked_character: Option<usize>,
+        verification: Option<&Verification>,
     ) {
         // Answers are only taken while the round is waiting for one.
         let enabled = self.phase == Phase::Pick;
@@ -564,7 +646,7 @@ impl GameScreen {
         }
 
         if let Some(slot) = chosen {
-            self.pick(slot, time);
+            self.pick(slot, time, verification);
         }
     }
 }
@@ -621,6 +703,52 @@ fn preload(ctx: &Context, textures: &mut Textures) {
     for name in &names {
         textures.get(ctx, name);
     }
+}
+
+/// The verification clock, in the top-left corner of the page.
+///
+/// It is the page's own chrome rather than part of the window: the game has no such
+/// display, and it is the deadline the bot holds the member to. The seconds are read
+/// off the Worker's clock — anchored when the session was last fetched — so a device
+/// whose own clock is wrong still counts down correctly.
+fn draw_verification(ui: &Ui, verification: &Verification, time: f64) {
+    let remaining = verification.remaining(time).max(0.0);
+    let seconds = remaining.ceil() as u64;
+    let clock = format!("{}:{:02}", seconds / 60, seconds % 60);
+
+    // The device readout's amber, going red in the last minute.
+    let colour = if remaining <= 60.0 {
+        Color32::from_rgb(0xff, 0x6b, 0x6b)
+    } else {
+        Color32::from_rgb(0xff, 0xd2, 0x00)
+    };
+
+    let tries = verification
+        .snapshot()
+        .map_or(0, |snapshot| snapshot.attempts_left);
+    let tries = match tries {
+        1 => "1 try left".to_owned(),
+        count => format!("{count} tries left"),
+    };
+
+    Area::new(Id::new("verification-clock"))
+        .anchor(Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
+        .show(ui.ctx(), |ui| {
+            Frame::NONE
+                .fill(Color32::from_black_alpha(0xa0))
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(Margin::same(6))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(clock).size(26.0).strong().color(colour));
+                        ui.label(
+                            RichText::new(tries)
+                                .size(12.0)
+                                .color(Color32::from_gray(0xc9)),
+                        );
+                    });
+                });
+        });
 }
 
 /// Draws the instruction line in the strip along the top of the frame.

@@ -170,7 +170,8 @@ async function handleSessionApi(
 }
 
 const isRoundIndex = (n: number) => Number.isInteger(n) && n >= 0 && n < 4;
-const isSlot = (n: number) => Number.isInteger(n) && n >= 1 && n <= 4;
+/** 1-4 is a position; 0 is the page reporting a round the player ran out of time on. */
+const isSlot = (n: number) => Number.isInteger(n) && n >= 0 && n <= 4;
 
 /**
  * A deploy that forgot a secret or still carries the placeholder values looks completely

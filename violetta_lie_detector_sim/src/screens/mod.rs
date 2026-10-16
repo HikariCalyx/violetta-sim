@@ -16,4 +16,7 @@ pub enum Outcome {
     Success,
     /// At least one attempt was wrong.
     Failure,
+    /// The verification ran out of time while the game was still going. Only a page
+    /// with a session can end this way.
+    Expired,
 }

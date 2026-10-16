@@ -5,6 +5,7 @@
 
 mod app;
 mod assets;
+mod net;
 mod screens;
 
 // When compiling natively:

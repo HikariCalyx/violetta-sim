@@ -10,6 +10,12 @@ egui = "0.36"
 # is turned off: the sprites are PNGs and the title screen's photograph is a JPEG.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
+# The verification page reads its session from the Worker. Only the wasm target ever
+# fetches (see `src/net.rs`), but the request and response types — and their derives —
+# are shared, so the game screen compiles and type-checks against the same definitions
+# on both targets.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -21,7 +27,11 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Document",
     "Element",
+    "Headers",
     "HtmlCanvasElement",
+    "Location",
+    "RequestInit",
+    "Response",
     "Window",
 ] }
 # eframe's `wgpu` feature is built with wgpu's default features disabled, so no
