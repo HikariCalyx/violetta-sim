@@ -106,8 +106,27 @@ export type PickResult =
  * single-threaded per session, so a late "success" cannot race the deadline kick.
  */
 export class VerificationSession extends DurableObject<Env> {
-  async read(): Promise<SessionState | null> {
-    return (await this.ctx.storage.get<SessionState>(KEY)) ?? null;
+  /**
+   * Everything that writes goes through this chain, one call at a time.
+   *
+   * A Durable Object serialises the *delivery* of requests but not the awaits inside them.
+   * `ensure` reads its state and then spends two network round trips muting the member and
+   * posting the notice; a second call arriving in that window — and one join does arrive
+   * twice, as a `chat_member` update and as the "… joined the group" service message —
+   * would read the state from before the first call saved anything and mute and greet the
+   * member all over again. Chaining the writes is what makes the state machine in this
+   * object as single-threaded as it looks.
+   */
+  private tail: Promise<unknown> = Promise.resolve();
+
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(work, work);
+    // A failure must not poison the chain for whoever comes next.
+    this.tail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 
   /**
@@ -116,6 +135,32 @@ export class VerificationSession extends DurableObject<Env> {
    * a link, or re-post a notice.
    */
   async ensure(
+    userId: number,
+    userName: string,
+    chatId: number,
+    title: string,
+  ): Promise<SessionState> {
+    return this.serialize(() => this.ensureLocked(userId, userName, chatId, title));
+  }
+
+  async pick(roundIndex: number, slot: number, elapsedMs: number): Promise<PickResult> {
+    return this.serialize(() => this.pickLocked(roundIndex, slot, elapsedMs));
+  }
+
+  async memberLeft(chatId: number): Promise<void> {
+    return this.serialize(() => this.memberLeftLocked(chatId));
+  }
+
+  /** The deadline, and the retention reaper that follows it. */
+  async alarm(): Promise<void> {
+    return this.serialize(() => this.alarmLocked());
+  }
+
+  async read(): Promise<SessionState | null> {
+    return (await this.ctx.storage.get<SessionState>(KEY)) ?? null;
+  }
+
+  private async ensureLocked(
     userId: number,
     userName: string,
     chatId: number,
@@ -153,23 +198,30 @@ export class VerificationSession extends DurableObject<Env> {
     };
     s.chats[key] = entry;
 
+    // Persisted and armed before the two network calls below: if either of them fails, or
+    // the Worker dies in between, the member is muted with a session that will still kick
+    // them — rather than muted with nothing to finish.
+    await this.save(s);
+    await this.arm(s);
+
     if (!(await this.mute(chatId, userId))) {
       // No rights, an admin target, a departing member... Never leave behind an entry the
       // alarm would later try to ban, and never post a notice we would not clean up.
       entry.state = 'gone';
       await this.save(s);
+      await this.arm(s);
       return s;
     }
 
     try {
       entry.noticeId = await this.notice(userId, userName, chatId, title);
     } catch (err) {
-      // The notice is only a courtesy. Letting it throw here would leave the member muted
-      // with no persisted session and no alarm — i.e. muted forever.
+      // The notice is only a courtesy: the entry stays `restricted`, so the deadline still
+      // removes the member either way.
       console.error('notice failed', { chatId, userId }, err instanceof Error ? err.message : err);
+      return s;
     }
     await this.save(s);
-    await this.arm(s);
     return s;
   }
 
@@ -199,7 +251,7 @@ export class VerificationSession extends DurableObject<Env> {
    * attempt is scored either way instead of leaving one open that nothing would close.
    * The DO, not the page, decides whether that ends the attempt or the whole session.
    */
-  async pick(
+  private async pickLocked(
     roundIndex: number,
     slot: number,
     elapsedMs: number,
@@ -251,7 +303,7 @@ export class VerificationSession extends DurableObject<Env> {
   }
 
   /** The member left of their own accord: nothing to kick, just stop tracking them. */
-  async memberLeft(chatId: number): Promise<void> {
+  private async memberLeftLocked(chatId: number): Promise<void> {
     const s = await this.read();
     if (!s || s.status !== 'open') return;
     const entry = s.chats[String(chatId)];
@@ -272,7 +324,7 @@ export class VerificationSession extends DurableObject<Env> {
    * re-armed on every fire — otherwise the second chat's deadline would never arrive.
    * Once the session is closed the same alarm is reused as the retention reaper.
    */
-  async alarm(): Promise<void> {
+  private async alarmLocked(): Promise<void> {
     const s = await this.read();
     if (!s) return;
     if (s.status !== 'open') {
