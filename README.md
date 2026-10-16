@@ -31,6 +31,7 @@ violetta_lie_detector_sim/ The Rust crate
         layout.rs          Pixel geometry, measured from the artwork and the footage
         stage.rs           Maps the window artwork onto the screen
         characters.rs      The four characters, their poses and their swaps
+        pattern.rs         The faint figures the stage lamps throw up
         rng.rs             A small random generator, seeded per game
         widgets.rs         The answer buttons
 ```
@@ -107,11 +108,14 @@ it acts as a mask for the layers under it:
 
 1. `lieDetector.back.png`, the theatre stage, at the top-left of the opening;
 2. the animated layer — characters, the glow and the stamps;
-3. the stage lights, at 60% and cycling colour twice a second once the masks are
+3. the pattern the lamps throw up — two dozen faint copies of `npc.stand.0` at
+   random places and strengths, laid over the characters and scattered afresh
+   every round;
+4. the stage lights, at 60% and cycling colour twice a second once the masks are
    on — over the characters, so the light falls on them, and still under the
    frame;
-4. the window frame;
-5. the instruction line, the device's number readout, and the answer buttons.
+5. the window frame;
+6. the instruction line, the device's number readout, and the answer buttons.
 
 All coordinates are in window space (the frame artwork is 441x318 px) and live in
 `src/screens/game/layout.rs`; `stage.rs` scales that onto the screen, snapping to

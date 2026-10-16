@@ -87,9 +87,25 @@ pub fn draw_scaled(
     centre: (f32, f32),
     scale: f32,
 ) -> Rect {
+    draw_scaled_tinted(ui, stage, sprite, centre, scale, Color32::WHITE)
+}
+
+/// Draws `sprite` with its canvas centred on `centre`, enlarged by `scale` image
+/// pixels to a window pixel, and tinted by `tint`.
+///
+/// The tint carries the strength for artwork that is shown faintly, which is what
+/// the stage lamps' scattered figures are drawn with.
+pub fn draw_scaled_tinted(
+    ui: &Ui,
+    stage: &Stage,
+    sprite: &Sprite,
+    centre: (f32, f32),
+    scale: f32,
+    tint: Color32,
+) -> Rect {
     let size = sprite.size() * scale * stage.scale();
     let rect = Rect::from_center_size(stage.point(centre.0, centre.1), size);
-    blit(ui, &sprite.texture, rect);
+    blit_tinted(ui, &sprite.texture, rect, tint);
     rect
 }
 
