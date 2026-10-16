@@ -20,11 +20,20 @@ export interface Env {
   SESSION: DurableObjectNamespace<VerificationSession>;
 }
 
-/** A chat that gates its new members. */
+/**
+ * A chat whose new members are gated.
+ *
+ * There is no enrolment step: the bot gates every chat where it is an administrator with
+ * the two rights it needs (see `gating.ts`), and an admin can switch that off per chat with
+ * `/verify_here off`.
+ */
 export interface RegisteredChat {
   chatId: number;
   title: string;
-  registeredAt: number;
+  /** When the bot's rights here were last confirmed, in unix ms. */
+  checkedAt: number;
+  /** Set when an admin switched gating off by hand; `null` while it is on. */
+  disabledAt: number | null;
 }
 
 /**

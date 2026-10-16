@@ -1,4 +1,4 @@
-import { REGISTRY_NAME, newSessionId, userIndexName, type Env } from './env';
+import { REGISTRY_NAME, newSessionId, userIndexName, type Env, type RegisteredChat } from './env';
 import type { SessionState, VerificationSession } from './session';
 import type {
   TgChat,
@@ -44,10 +44,71 @@ function furthestDeadline(state: SessionState): number {
   return deadlines.length ? Math.max(...deadlines) : Date.now();
 }
 
+/**
+ * Whether this chat should be gated, and the registry entry for it.
+ *
+ * The bot gates every chat where it holds the rights it needs, so nobody has to enrol one:
+ * being made an admin is the whole opt-in. The first join in a chat the bot has not seen
+ * before is what confirms the rights, because a promotion that happened before this Worker
+ * existed sends no update of its own.
+ */
+async function gatedChat(env: Env, chat: TgChat): Promise<RegisteredChat | null> {
+  const registry = registryStub(env);
+  const known = await registry.get(chat.id);
+  if (known) return known.disabledAt === null ? known : null;
+
+  if (!(await botRights(env, chat.id))) return null;
+  console.info('gating this chat: the bot has the rights it needs', { chatId: chat.id });
+  return registry.remember(chat.id, chat.title ?? 'the group');
+}
+
+/**
+ * Confirms the bot is an administrator in `chatId` with the two rights it needs.
+ *
+ * There is no "Ban users" permission in the Bot API: muting and kicking are both
+ * `can_restrict_members`, which is what the clients label that way. Telegram omits
+ * permission fields that are false, so they are compared to `true`.
+ */
+async function botRights(env: Env, chatId: number): Promise<boolean> {
+  try {
+    const registry = registryStub(env);
+    let botId = await registry.botId();
+    if (botId === null) {
+      botId = (await callTelegram<TgUser>(env, 'getMe', {})).id;
+      await registry.setBotId(botId);
+    }
+
+    const self = await callTelegram<TgChatMember>(env, 'getChatMember', {
+      chat_id: chatId,
+      user_id: botId,
+    });
+    return (
+      self.status === 'administrator' &&
+      self.can_restrict_members === true &&
+      self.can_delete_messages === true
+    );
+  } catch (err) {
+    console.error(
+      'could not read the bot rights here',
+      { chatId },
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
+/** What the bot needs before it can verify anybody. */
+function missingRightsMessage(): string {
+  return (
+    'I need to be an admin in this chat with "Ban users" (that is what mutes and kicks) and ' +
+    '"Delete messages" before I can verify new members.'
+  );
+}
+
 export async function onMemberJoined(env: Env, chat: TgChat, user: TgUser): Promise<void> {
   if (user.is_bot) return;
 
-  const registered = await registryStub(env).get(chat.id);
+  const registered = await gatedChat(env, chat);
   if (!registered) return;
 
   const index = indexStub(env, user.id);
@@ -91,7 +152,7 @@ async function onGroupMessage(env: Env, msg: TgMessage): Promise<void> {
   const muted = from !== undefined && !from.is_bot && (await isMuted(env, msg.chat.id, from.id));
 
   if (msg.new_chat_members?.length) {
-    if (!(await registryStub(env).get(msg.chat.id))) return;
+    if (!(await gatedChat(env, msg.chat))) return;
     // Fallback for chats that do not deliver `chat_member` updates. `ensure` is
     // idempotent, so both paths firing for one join cannot double-mute or double-post.
     for (const member of msg.new_chat_members) await onMemberJoined(env, msg.chat, member);
@@ -133,20 +194,42 @@ async function onChatMember(env: Env, update: TgChatMemberUpdated): Promise<void
 }
 
 async function onBotMembership(env: Env, update: TgChatMemberUpdated): Promise<void> {
-  // `my_chat_member` is only ever about this bot, so no getMe is needed here.
+  // `my_chat_member` is only ever about this bot, so its own permissions are already in the
+  // update and no getMe/getChatMember round trip is needed here.
   const chatId = update.chat.id;
-  const status = update.new_chat_member.status;
+  const self = update.new_chat_member;
   const registry = registryStub(env);
+  const known = await registry.get(chatId);
 
-  if (status === 'left' || status === 'kicked') {
-    if (await registry.get(chatId)) {
-      await registry.unregister(chatId);
-      console.warn('bot removed from a registered chat; verification disabled', { chatId });
+  if (self.status === 'left' || self.status === 'kicked') {
+    if (known) {
+      await registry.forget(chatId);
+      console.warn('the bot was removed from a chat it was gating', { chatId });
     }
     return;
   }
-  if (status === 'member' && (await registry.get(chatId))) {
-    console.warn('bot is no longer an admin here: muting will fail until it is promoted', { chatId });
+
+  const enough =
+    self.status === 'administrator' &&
+    self.can_restrict_members === true &&
+    self.can_delete_messages === true;
+
+  if (enough) {
+    // Promoted: gate from now on, without anybody having to ask. `remember` keeps an
+    // admin's earlier `/verify_here off` in place.
+    const entry = await registry.remember(chatId, update.chat.title ?? 'the group');
+    if (entry.disabledAt === null) {
+      console.info('gating this chat now that the bot is an admin', { chatId });
+    }
+    return;
+  }
+
+  if (known && known.disabledAt === null) {
+    await registry.forget(chatId);
+    console.warn(
+      'the bot no longer has the rights it needs here: promote it back with "Ban users" and "Delete messages"',
+      { chatId },
+    );
   }
 }
 
@@ -189,13 +272,22 @@ async function onPrivateStart(env: Env, user: TgUser, chatId: number): Promise<v
   );
 }
 
-/** `/verify_here on|off` — how a chat opts in. Admin-only. */
+/**
+ * `/verify_here [on|off]` — what is happening in this chat, and the switch an admin can
+ * throw.
+ *
+ * It is not how a chat is enrolled: the bot gates any chat where it holds the rights. This
+ * is the escape hatch for a chat where it should not, and the way to see why it is not.
+ */
 async function onVerifyHere(env: Env, msg: TgMessage): Promise<void> {
   const from = msg.from;
   if (!from) return;
   const chatId = msg.chat.id;
   const registry = registryStub(env);
   const arg = (msg.text ?? '').split(/\s+/)[1]?.toLowerCase();
+  const summary =
+    `Verification is ON for this chat: new members are muted for ${MUTE_SECONDS / 60} minutes and must ` +
+    `finish the mini-game in ${env.BOT_USERNAME}'s PM.`;
   const reply = (text: string) =>
     callTelegram(env, 'sendMessage', {
       chat_id: chatId,
@@ -212,52 +304,34 @@ async function onVerifyHere(env: Env, msg: TgMessage): Promise<void> {
     return;
   }
 
-  if (arg !== 'on' && arg !== 'off') {
-    await reply(
-      (await registry.get(chatId))
-        ? 'Verification is ON for this chat. An admin can turn it off with /verify_here off.'
-        : 'Verification is OFF for this chat. An admin can turn it on with /verify_here on.',
-    );
-    return;
-  }
+  const rights = await botRights(env, chatId);
 
   if (arg === 'off') {
-    await registry.unregister(chatId);
+    await registry.disable(chatId, msg.chat.title ?? 'the group');
     await reply(
-      'Verification is OFF for this chat. Members muted earlier stay muted — lift those by hand ' +
-        'if this was a mistake.',
+      'Verification is OFF for this chat, and /verify_here on turns it back on. Members muted ' +
+        'earlier stay muted — lift those by hand if this was a mistake.',
     );
     return;
   }
 
-  // Refuse to switch on unless the bot can do both jobs. In the Bot API there is no
-  // separate "Ban users" permission: muting and kicking are both `can_restrict_members`,
-  // which is what the clients label "Ban users". Delete rights clear the notice again.
-  const me = await callTelegram<TgUser>(env, 'getMe', {});
-  const self = await callTelegram<TgChatMember>(env, 'getChatMember', {
-    chat_id: chatId,
-    user_id: me.id,
-  });
-  // Telegram omits false permission fields, so these must be compared to `true`.
-  const canMute = self.can_restrict_members === true;
-  const canDelete = self.can_delete_messages === true;
-  if (self.status !== 'administrator' || !canMute || !canDelete) {
-    const missing = [
-      self.status !== 'administrator' && 'be an admin',
-      !canMute && 'have "Ban users"',
-      !canDelete && 'have "Delete messages"',
-    ]
-      .filter(Boolean)
-      .join(' and ');
-    await reply(`I need to ${missing} before verification can be turned on.`);
+  if (!rights) {
+    await reply(missingRightsMessage());
     return;
   }
 
-  await registry.register(chatId, msg.chat.title ?? 'the group');
-  await reply(
-    `Verification is ON for this chat: new members are muted for ${MUTE_SECONDS / 60} minutes and must ` +
-      `finish the mini-game in ${env.BOT_USERNAME}'s PM.`,
-  );
+  if (arg === 'on') {
+    await registry.enable(chatId, msg.chat.title ?? 'the group');
+    await reply(summary);
+    return;
+  }
+
+  const known = await registry.get(chatId);
+  if (known?.disabledAt != null) {
+    await reply('Verification is OFF for this chat: an admin switched it off with /verify_here off.');
+    return;
+  }
+  await reply(summary);
 }
 
 /** Entry point for a webhook update. Never throws: a retried update would duplicate work. */

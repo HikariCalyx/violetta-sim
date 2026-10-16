@@ -12,9 +12,14 @@ The arrival notice greets them by name with a **Start** button into the bot, and
 announcement that they joined — along with anything they manage to send before the mute
 lands — is deleted again.
 
-**Nothing at all happens in a chat until an admin has run `/verify_here on` in it and the
-bot has confirmed it.** An unregistered chat is a complete no-op, which is worth knowing
-before debugging a silent bot.
+**No chat has to be enrolled.** The bot gates every chat where it is an administrator with
+**Ban users** and **Delete messages** — being promoted is the whole opt-in. The first join
+in a chat it has not seen before is what confirms the rights, because a promotion that
+happened before the Worker existed sends no update of its own. Until then that chat is a
+complete no-op, which is worth knowing before debugging a silent bot.
+
+`/verify_here` reports what is happening in the chat, and `/verify_here off` is the escape
+hatch for a chat where the bot should *not* gate anyone.
 
 ## How it fits together
 
@@ -23,7 +28,7 @@ before debugging a silent bot.
 | Webhook + API routes | `src/index.ts` | One origin for the game page and the API, so there is no CORS |
 | Telegram calls, permissions | `src/telegram.ts` | All Bot API traffic; every failure carries no token |
 | Update dispatch, `/start`, `/verify_here` | `src/gating.ts` | The only place that decides "this member must be gated" |
-| `ChatRegistry` DO | `src/registry.ts` | Which chats opt in. Strongly consistent on purpose |
+| `ChatRegistry` DO | `src/registry.ts` | Which chats the bot is gating, and an admin's `off`. Strongly consistent on purpose |
 | `UserIndex` DO | `src/user-index.ts` | Which session is open for a user, so a UUID in the URL is enough |
 | `VerificationSession` DO | `src/session.ts` | The state machine, the countdown alarm, the round scoring |
 | `dist/` | `../dist` | The trunk-built game, served by the same Worker |
@@ -60,9 +65,9 @@ attempt counter is shared — one game, three tries.
           "secret_token":"<WEBHOOK_SECRET>",
           "allowed_updates":["message","chat_member","my_chat_member"]}'
    ```
-6. Add the bot to the group as an admin with **Delete messages** and **Ban users**, then
-   send `/verify_here on` in the group. The bot verifies its own rights and refuses if
-   either is missing.
+6. Add the bot to the group as an admin with **Ban users** and **Delete messages**. That is
+   all: the next join is muted and answered, and the chat is remembered from then on.
+   `/verify_here` in the group says whether it is gating, and why not if it is not.
 
 `BOT_USERNAME` and `VERIFY_ORIGIN` in `wrangler.jsonc` must match the real bot and the
 domain the Worker answers on. A Workers custom domain has to be a zone on the same
