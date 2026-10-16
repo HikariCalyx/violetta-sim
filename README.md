@@ -106,9 +106,10 @@ the detector device, and a black 412x187 opening. The frame is drawn *last*, so
 it acts as a mask for the layers under it:
 
 1. `lieDetector.back.png`, the theatre stage, at the top-left of the opening;
-2. the stage lights, at 60% and cycling colour twice a second, once the masks are
-   on;
-3. the animated layer — characters, the glow and the stamps;
+2. the animated layer — characters, the glow and the stamps;
+3. the stage lights, at 60% and cycling colour twice a second once the masks are
+   on — over the characters, so the light falls on them, and still under the
+   frame;
 4. the window frame;
 5. the instruction line, the device's number readout, and the answer buttons.
 
