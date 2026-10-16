@@ -38,9 +38,10 @@
   //   npx wrangler secret put BOT_TOKEN
   //   npx wrangler secret put WEBHOOK_SECRET
 
-  // Uncomment once violetta.trill.workers.dev is a zone on this Cloudflare account
-  // (a Workers custom domain must live in the same account):
-  // "routes": [{ "pattern": "violetta.trill.workers.dev", "custom_domain": true }],
+  // Serving on a domain of your own needs that domain to be a ZONE on this same Cloudflare
+  // account — `*.workers.dev` can never be a custom domain. Once that is true, uncomment
+  // this and point both the pattern and VERIFY_ORIGIN above at it:
+  // "routes": [{ "pattern": "violetta.example.com", "custom_domain": true }],
 
   "observability": { "enabled": true }
 }

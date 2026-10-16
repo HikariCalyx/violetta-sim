@@ -46,7 +46,18 @@ async function handleWebhook(
     return new Response('Forbidden', { status: 403 });
   }
 
-  const update = (await request.json()) as TgUpdate;
+  // Guarded: an unparseable body used to escape as an uncaught exception, which Cloudflare
+  // answers with a 500 "Worker threw a JavaScript exception" (error 1101) — the exact
+  // symptom of a hand-made test whose JSON got mangled by a shell. Telegram itself always
+  // sends valid JSON, so this is a caller error, not a retryable one.
+  let update: TgUpdate;
+  try {
+    update = (await request.json()) as TgUpdate;
+  } catch {
+    return new Response('Bad request', { status: 400 });
+  }
+  if (!update || typeof update !== 'object') return new Response('Bad request', { status: 400 });
+
   // Answer before doing the work: Telegram treats anything but a 2xx as a failure and
   // re-sends, which would repeat the Bot API calls. `waitUntil` keeps us alive for them.
   ctx.waitUntil(dispatch(env, update));
