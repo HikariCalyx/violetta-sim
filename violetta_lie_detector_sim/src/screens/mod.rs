@@ -9,6 +9,13 @@ pub mod start;
 /// Backdrop the UI is drawn on top of (matches the page background).
 pub const BACKGROUND: Color32 = Color32::from_rgb(0x1b, 0x1b, 0x1f);
 
+/// The red a chaos-mode button is filled with, so it reads as the harder of the two
+/// settings rather than as another way in.
+pub const CHAOS_FILL: Color32 = Color32::from_rgb(0x84, 0x00, 0x00);
+
+/// How far a chaos-mode button sits below the button above it.
+pub const CHAOS_GAP: f32 = 16.0;
+
 /// How a game of the lie detector ended, which the result screen reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {

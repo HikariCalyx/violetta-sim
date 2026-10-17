@@ -61,7 +61,7 @@ pub fn title(language: Option<&'static str>) -> &'static str {
 /// the buttons, and how the result screen reports the outcome.
 ///
 /// These are what the game's own wording is for, so they are short: a caption
-/// over an outcome, and the three buttons.
+/// over an outcome, and the four buttons.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
     /// The button that starts a game.
@@ -69,6 +69,9 @@ pub struct Words {
     /// The name of the chaos-mode button, where the language has one of its own. A
     /// language that leaves it `None` keeps the English name on the button.
     pub chaos: Option<&'static str>,
+    /// The button the result screen offers next to *Try Again* once the normal
+    /// setting has been cleared.
+    pub try_chaos: &'static str,
     /// The button that starts another one.
     pub try_again: &'static str,
     /// How a game the player won is reported.
@@ -82,6 +85,7 @@ impl Words {
     const fn new(
         start: &'static str,
         chaos: Option<&'static str>,
+        try_chaos: &'static str,
         try_again: &'static str,
         success: &'static str,
         failed: &'static str,
@@ -89,6 +93,7 @@ impl Words {
         Self {
             start,
             chaos,
+            try_chaos,
             try_again,
             success,
             failed,
@@ -106,13 +111,18 @@ impl Words {
 /// Returned by value rather than as a `&'static`, because a reference to a
 /// constructor call is not a promoted constant: it would have to be built from a
 /// `const` item per language, which is one table too many.
+///
+/// Left alone by rustfmt: it would fold a row that outgrows its width into one
+/// argument a line, and a language has to stay on one line for the font subsetter
+/// to read the table (`scripts/subset-cjk-font.py`).
+#[rustfmt::skip]
 pub fn words(language: Option<&'static str>) -> Words {
     match language {
-        Some("cn") => Words::new("开始", Some("进阶模式"), "再试一次", "成功", "失败"),
-        Some("jp") => Words::new("スタート", Some("カオスモード"), "もう一度", "成功", "失敗"),
-        Some("kr") => Words::new("시작", Some("카오스 모드"), "다시하기", "성공", "실패"),
-        Some("tw") => Words::new("開始", Some("混沌模式"), "再試一次", "成功", "失敗"),
-        _ => Words::new("Start", None, "Try Again", "Success", "Failed"),
+        Some("cn") => Words::new("开始", Some("进阶模式"), "进阶模式", "再试一次", "成功", "失败"),
+        Some("jp") => Words::new("スタート", Some("カオスモード"), "カオスモード", "もう一度", "成功", "失敗"),
+        Some("kr") => Words::new("시작", Some("카오스 모드"), "카오스 모드", "다시하기", "성공", "실패"),
+        Some("tw") => Words::new("開始", Some("混沌模式"), "混沌模式", "再試一次", "成功", "失敗"),
+        _ => Words::new("Start", None, "Try Chaos Mode", "Try Again", "Success", "Failed"),
     }
 }
 
@@ -190,6 +200,7 @@ mod tests {
         let mut strings = vec![
             super::title(Some(language)),
             words.start,
+            words.try_chaos,
             words.try_again,
             words.success,
             words.failed,
@@ -207,6 +218,7 @@ mod tests {
             let words = super::words(Some(language));
             for (word, localised, base) in [
                 ("start", words.start, english.start),
+                ("try_chaos", words.try_chaos, english.try_chaos),
                 ("try_again", words.try_again, english.try_again),
                 ("success", words.success, english.success),
                 ("failed", words.failed, english.failed),

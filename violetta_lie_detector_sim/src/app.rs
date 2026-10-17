@@ -6,7 +6,7 @@ use egui::Ui;
 
 use crate::assets::{self, Textures};
 use crate::language;
-use crate::screens::{self, Mode, Outcome, game::GameScreen};
+use crate::screens::{self, Mode, Outcome, game::GameScreen, result::Next};
 
 /// Which screen the app is currently showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,9 +75,14 @@ impl eframe::App for LieDetectorApp {
             }
             Screen::Result(outcome) => {
                 let words = language::words(self.textures.language());
-                if screens::result::show(ui, outcome, words) {
-                    // A retry stays at the setting the game was played at.
-                    self.start_game(ui, self.mode);
+                if let Some(next) = screens::result::show(ui, outcome, words, self.mode) {
+                    // *Try Again* stays at the setting the game was played at, and
+                    // the chaos button the result screen offers moves up to chaos.
+                    let mode = match next {
+                        Next::Same => self.mode,
+                        Next::Chaos => Mode::Chaos,
+                    };
+                    self.start_game(ui, mode);
                 }
             }
         }
