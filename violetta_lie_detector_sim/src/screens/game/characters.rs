@@ -370,7 +370,7 @@ pub fn shuffle_to(
     let mut filled = 0;
 
     for _ in 1..mode.shuffle_passes() {
-        let steps = shuffle_pass(&current, rng);
+        let steps = shuffle_pass(&current, rng, mode);
         let first_leg = if filled == 0 { 0 } else { 1 };
 
         for index in 0..layout::ANSWER_COUNT {
@@ -384,7 +384,7 @@ pub fn shuffle_to(
     }
 
     // The pass that decides the round: it lands on the Worker's slots.
-    let steps = planned_pass(&current, destinations, rng);
+    let steps = planned_pass(&current, destinations, rng, mode);
     let first_leg = if filled == 0 { 0 } else { 1 };
     for index in 0..layout::ANSWER_COUNT {
         for leg in first_leg..LEGS {
@@ -405,11 +405,13 @@ pub fn shuffle_to(
 /// One pass of a verification's walk, ending in the slots the Worker picked.
 ///
 /// The same shape as a pass of [`shuffle`] — into its own row, across that row twice,
-/// and back to standing depth — so a verification is walked the way a plain game is.
+/// and back to standing depth — so a verification is walked the way a plain game is,
+/// including getting the diagonal entry and exit of a chaos pass.
 fn planned_pass(
     current: &[Spot; layout::ANSWER_COUNT],
     destinations: &[usize],
     rng: &mut Rng,
+    mode: Mode,
 ) -> [[Spot; LEGS]; layout::ANSWER_COUNT] {
     let mut rows = layout::WALK_ROWS;
     rng.shuffle(&mut rows);
@@ -419,17 +421,29 @@ fn planned_pass(
         let slot = destinations.get(index).copied().unwrap_or(index) % layout::ANSWER_COUNT;
         let destination = (slot, layout::STAND_ROW);
         let row = rows[index];
-        let away = (start.0, row);
-        let first = waypoint(row, &[start.0, destination.0], rng);
-        let second = waypoint(row, &[first.0, destination.0], rng);
-        [
-            start,
-            away,
-            first,
-            second,
-            (destination.0, row),
-            destination,
-        ]
+
+        if mode == Mode::Chaos && slot != start.0 {
+            // Diagonal entry and exit, as in a chaos pass of a plain round. A
+            // character the Worker puts back in its own slot still steps straight out
+            // and back.
+            let entry = waypoint(row, &[start.0, destination.0], rng);
+            let first = waypoint(row, &[entry.0, destination.0], rng);
+            let second = waypoint(row, &[first.0, destination.0], rng);
+            let exit = waypoint(row, &[second.0, destination.0], rng);
+            [start, entry, first, second, exit, destination]
+        } else {
+            let away = (start.0, row);
+            let first = waypoint(row, &[start.0, destination.0], rng);
+            let second = waypoint(row, &[first.0, destination.0], rng);
+            [
+                start,
+                away,
+                first,
+                second,
+                (destination.0, row),
+                destination,
+            ]
+        }
     })
 }
 

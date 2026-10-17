@@ -7,7 +7,7 @@ use egui::{Align, CentralPanel, Color32, Frame, Layout, RichText, Ui};
 use crate::assets::{self, Textures};
 use crate::language::{self, Words};
 use crate::net::{self, Verification};
-use crate::screens::{self, BACKGROUND, Mode, Outcome, game::GameScreen};
+use crate::screens::{self, BACKGROUND, Mode, Outcome, game::GameScreen, result::Next};
 
 /// Which screen the app is currently showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,16 +136,27 @@ impl eframe::App for LieDetectorApp {
             }
             Screen::Result(outcome) => {
                 let words = language::words(self.textures.language());
-                let again = screens::result::show(ui, outcome, self.verification.as_ref(), words);
-                if again {
+                let next = screens::result::show(
+                    ui,
+                    outcome,
+                    self.verification.as_ref(),
+                    words,
+                    self.mode,
+                );
+                if let Some(next) = next {
+                    // *Try Again* keeps the setting the game was played at, and the
+                    // chaos button the result screen offers moves up to chaos.
+                    let mode = match next {
+                        Next::Same => self.mode,
+                        Next::Chaos => Mode::Chaos,
+                    };
                     // A verification replays with the shuffle the Worker sent for the
                     // next attempt, which arrives with the report that ended the last
                     // one — so the game is started again from the session.
                     self.started = false;
                     self.screen = Screen::Game;
                     if self.verification.is_none() {
-                        // A retry stays at the setting the game was played at.
-                        self.start_game(ui, self.mode);
+                        self.start_game(ui, mode);
                     }
                 }
             }

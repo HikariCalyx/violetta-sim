@@ -70,6 +70,9 @@ pub struct Words {
     /// The name of the chaos-mode button, where the language has one of its own. A
     /// language that leaves it `None` keeps the English name on the button.
     pub chaos: Option<&'static str>,
+    /// The button the result screen offers next to *Try Again* once the normal
+    /// setting has been cleared.
+    pub try_chaos: &'static str,
     /// The button that starts another one.
     pub try_again: &'static str,
     /// How a game the player won is reported.
@@ -129,6 +132,7 @@ pub fn words(language: Option<&'static str>) -> Words {
         Some("cn") => Words {
             start: "开始",
             chaos: Some("进阶模式"),
+            try_chaos: "进阶模式",
             try_again: "再试一次",
             success: "成功",
             failed: "失败",
@@ -145,6 +149,7 @@ pub fn words(language: Option<&'static str>) -> Words {
         Some("jp") => Words {
             start: "スタート",
             chaos: Some("カオスモード"),
+            try_chaos: "カオスモード",
             try_again: "もう一度",
             success: "成功",
             failed: "失敗",
@@ -161,6 +166,7 @@ pub fn words(language: Option<&'static str>) -> Words {
         Some("kr") => Words {
             start: "시작",
             chaos: Some("카오스 모드"),
+            try_chaos: "카오스 모드",
             try_again: "다시하기",
             success: "성공",
             failed: "실패",
@@ -177,6 +183,7 @@ pub fn words(language: Option<&'static str>) -> Words {
         Some("tw") => Words {
             start: "開始",
             chaos: Some("混沌模式"),
+            try_chaos: "混沌模式",
             try_again: "再試一次",
             success: "成功",
             failed: "失敗",
@@ -193,6 +200,7 @@ pub fn words(language: Option<&'static str>) -> Words {
         _ => Words {
             start: "Start",
             chaos: None,
+            try_chaos: "Try Chaos Mode",
             try_again: "Try Again",
             success: "Success",
             failed: "Failed",
@@ -277,14 +285,15 @@ mod tests {
     }
 
     /// Every word the app writes for itself in `language`, named so that a failure
-    /// can say which one it is: the buttons, including the mode's, the four the
-    /// screens use, and the nine the bot's verification adds.
-    fn localised_words(language: Option<&'static str>) -> [(&'static str, &'static str); 14] {
+    /// can say which one it is: the buttons, including the two the mode has, the
+    /// captions the screens use, and the nine the bot's verification adds.
+    fn localised_words(language: Option<&'static str>) -> [(&'static str, &'static str); 15] {
         let words = super::words(language);
         [
             ("start", words.start),
             // A language that has not named the mode draws the English name instead.
             ("chaos", words.chaos.unwrap_or("Chaos Mode")),
+            ("try_chaos", words.try_chaos),
             ("try_again", words.try_again),
             ("success", words.success),
             ("failed", words.failed),
