@@ -245,7 +245,8 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
     }
 
     // A normal round fills only part of the path; the rest repeats the place it ends
-    // at, and `walked` does not spend time on a leg that goes nowhere.
+    // at. `walked` is told how many legs the round is scheduled over, so the padding
+    // costs no time.
     for (index, character) in characters.iter_mut().enumerate() {
         for place in &mut paths[index][filled..] {
             *place = current[index];
@@ -300,9 +301,10 @@ fn shuffle_pass(
         let away = (start.0, row);
 
         if index == standing {
-            // Nothing to cross: it steps out of its slot into its row and back into
-            // it. The places it is already at are repeated because every path has the
-            // same shape; `walked` does not spend time on a leg that goes nowhere.
+            // Nothing to cross: it steps out of its slot into its row and back into it,
+            // waiting there while the others cross. The places it is already at are
+            // repeated because every path has the same shape, and that wait is what
+            // keeps it at its own depth while the other three are in theirs.
             [start, away, away, away, away, destination]
         } else {
             let first = waypoint(row, &[start.0, destination.0], rng);
@@ -472,6 +474,10 @@ pub struct Step {
     /// How far a walk to another place has come, from 0 to 1. Only [`Pose::Walk`]
     /// uses it.
     pub walked: f32,
+    /// How many legs the walk is laid out over. Every character is given the same
+    /// number, so the four change depth at the same moments and never share a depth
+    /// while they are moving.
+    pub legs: usize,
     /// Whether the characters can be clicked to answer.
     pub pickable: bool,
 }
@@ -491,7 +497,7 @@ pub fn draw(
 
     let stances: [Stance; layout::ANSWER_COUNT] = std::array::from_fn(|index| {
         if step.pose == Pose::Walk {
-            walked(&characters[index], step.walked)
+            walked(&characters[index], step.walked, step.legs)
         } else {
             characters[index].stance()
         }
@@ -541,32 +547,24 @@ pub fn draw(
 /// path, so it heads along the axes the path is built from during one round, and its
 /// size follows the rows it walks through on the way.
 ///
-/// Only the legs that go somewhere are counted. Every path has the same shape, so the
-/// one that keeps its place is padded with places it is already at, and spending time
-/// on those would leave it standing still with the walk cycle running: it steps out of
-/// its slot and back over the whole walk instead.
-fn walked(character: &Character, progress: f32) -> Stance {
-    // The legs that go somewhere, in the order they are walked.
-    let mut steps: [(Spot, Spot); PLACES - 1] = [((0, 0), (0, 0)); PLACES - 1];
-    let mut count = 0;
-
-    for leg in character.path.windows(2) {
-        if leg[0] != leg[1] {
-            steps[count] = (leg[0], leg[1]);
-            count += 1;
-        }
-    }
-
-    if count == 0 {
+/// Every character is walked over the same number of legs, including the ones that go
+/// nowhere (the character that keeps its place waits in its row while the others cross).
+/// That shared schedule is what keeps their depths apart: with the same leg at the same
+/// time, the four step into their rows together, sit at four different depths while
+/// they cross, and step back together. Counting only the legs that move would let one
+/// of them still be stepping into its row while another is already parked at that
+/// depth, and the two would be drawn over one another.
+fn walked(character: &Character, progress: f32, legs: usize) -> Stance {
+    if legs == 0 {
         return character.stance();
     }
 
-    let travelled = (progress * count as f32).clamp(0.0, count as f32);
-    let leg = (travelled as usize).min(count - 1);
+    let travelled = (progress * legs as f32).clamp(0.0, legs as f32);
+    let leg = (travelled as usize).min(legs - 1);
     let part = travelled - leg as f32;
 
-    let from = stance(steps[leg].0);
-    let to = stance(steps[leg].1);
+    let from = stance(character.path[leg]);
+    let to = stance(character.path[leg + 1]);
     placed(
         Stance {
             anchor: (
@@ -782,6 +780,46 @@ mod tests {
             // And all four stand at the same depth between rounds, one row upstage.
             for character in characters {
                 assert_eq!(character.spot().1, layout::STAND_ROW);
+            }
+        }
+    }
+
+    /// The four never share a depth while they walk. With one shared leg schedule they
+    /// step into their rows together, sit at four different depths while they cross, and
+    /// step back together — two characters at the same depth would be drawn over one
+    /// another, which is exactly what a shared schedule avoids.
+    #[test]
+    fn the_four_never_share_a_depth_while_they_walk() {
+        let mut rng = Rng::new(rng::seed(11.0));
+        let mut characters = spawn(&mut rng);
+
+        for mode in [Mode::Normal, Mode::Chaos] {
+            let legs = mode.shuffle_passes() * (LEGS - 1);
+            for round in 0..8 {
+                shuffle(&mut characters, &mut rng, mode);
+
+                // Fine enough to catch a crossing at the moment it happens: an old
+                // schedule where two characters met at a depth could do so inside one
+                // frame's worth of progress.
+                for step in 1..1000 {
+                    let progress = step as f32 / 1000.0;
+                    for left in 0..layout::ANSWER_COUNT {
+                        for right in (left + 1)..layout::ANSWER_COUNT {
+                            let a = walked(&characters[left], progress, legs);
+                            let b = walked(&characters[right], progress, legs);
+                            // `walked` includes each character's own placement offset;
+                            // take it back off so two depths really compare.
+                            let a_depth = (a.anchor.1 - characters[left].offset.1, a.scale);
+                            let b_depth = (b.anchor.1 - characters[right].offset.1, b.scale);
+                            assert!(
+                                (a_depth.0 - b_depth.0).abs() > 0.01
+                                    || (a_depth.1 - b_depth.1).abs() > 0.0001,
+                                "{mode:?} round {round}, progress {progress:.2}: \
+                                 characters {left} and {right} share a depth"
+                            );
+                        }
+                    }
+                }
             }
         }
     }

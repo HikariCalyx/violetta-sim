@@ -551,6 +551,9 @@ impl GameScreen {
                 pose,
                 tick,
                 walked: (elapsed / self.mode.walk_seconds()).clamp(0.0, 1.0) as f32,
+                // The same schedule for all four: a normal round has five legs, and a
+                // chaos round three passes of them.
+                legs: self.mode.shuffle_passes() * (characters::LEGS - 1),
                 pickable: self.phase == Phase::Pick,
             },
         );
