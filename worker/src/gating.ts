@@ -1,5 +1,5 @@
 import { REGISTRY_NAME, newSessionId, userIndexName, type Env, type RegisteredChat } from './env';
-import { attemptLimit, type SessionState, type VerificationSession } from './session';
+import { type SessionState, type VerificationSession } from './session';
 import type {
   CapturedMessage,
   TgChat,
@@ -329,12 +329,13 @@ async function onBotMembership(env: Env, update: TgChatMemberUpdated): Promise<v
  * The user is looked up by id, so a forwarded deep link buys nothing.
  */
 async function onPrivateStart(env: Env, user: TgUser, chatId: number): Promise<void> {
-  const reply = (text: string) =>
+  const reply = (text: string, button?: { text: string; url: string }) =>
     callTelegram(env, 'sendMessage', {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
+      ...(button ? { reply_markup: { inline_keyboard: [[button]] } } : {}),
     });
 
   const index = indexStub(env, user.id);
@@ -356,12 +357,12 @@ async function onPrivateStart(env: Env, user: TgUser, chatId: number): Promise<v
 
   // The earliest deadline, because that is the one that actually removes them.
   const deadline = Math.min(...restricted.map((chat) => chat.deadline));
-  const limit = attemptLimit(state);
-  const attempt = Math.min(state.attempts + 1, limit);
-  await reply(
-    `Verify here — ${mmss(deadline - Date.now())} left, attempt ${attempt} of ${limit}:\n` +
-      `${env.VERIFY_ORIGIN}/telegram?session=${state.sessionId}`,
-  );
+  // The play page as a button rather than a bare link: a URL button is what Telegram
+  // shows as the thing to press, and the text stays a status line that fits next to it.
+  await reply(`Please finish verification here. Time left: ${mmss(deadline - Date.now())}`, {
+    text: 'Verify',
+    url: `${env.VERIFY_ORIGIN}/telegram?session=${state.sessionId}`,
+  });
 }
 
 /** Entry point for a webhook update. Never throws: a retried update would duplicate work. */
