@@ -42,6 +42,7 @@ function furthestDeadline(state: SessionState): number {
   const deadlines = Object.values(state.chats)
     .filter((chat) => chat.state === 'restricted')
     .map((chat) => chat.deadline);
+  if (state.userbot) deadlines.push(state.userbot.deadline);
   return deadlines.length ? Math.max(...deadlines) : Date.now();
 }
 

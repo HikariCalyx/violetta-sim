@@ -1,6 +1,7 @@
 import type { ChatRegistry } from './registry';
 import type { VerificationSession } from './session';
 import type { UserIndex } from './user-index';
+import type { UserbotInbox } from './userbot';
 
 /** Bindings declared in `wrangler.jsonc`. */
 export interface Env {
@@ -12,12 +13,19 @@ export interface Env {
   BOT_USERNAME: string;
   /** Var. Where this Worker is reachable, e.g. `https://violetta.example.com`. */
   VERIFY_ORIGIN: string;
+  /**
+   * Secret. The userbot's api_hash, only used to derive the bearer token the userbot
+   * presents to `/api/userbot/*`. Optional: without it those routes answer 503 and the
+   * rest of the Worker keeps working.
+   */
+  USERBOT_API_HASH?: string;
 
   /** The trunk-built game bundle (`../dist`). */
   ASSETS: Fetcher;
   REGISTRY: DurableObjectNamespace<ChatRegistry>;
   USER_INDEX: DurableObjectNamespace<UserIndex>;
   SESSION: DurableObjectNamespace<VerificationSession>;
+  USERBOT_INBOX: DurableObjectNamespace<UserbotInbox>;
 }
 
 /**
@@ -40,6 +48,9 @@ export interface RegisteredChat {
  * consistent, which would let a chat be registered yet still miss the next join).
  */
 export const REGISTRY_NAME = 'registry';
+
+/** One inbox collects the cleanups the PM userbot still has to perform. */
+export const USERBOT_INBOX_NAME = 'userbot-inbox';
 
 /** Per-user index. Keyed on the user alone — the gate is per user, not per chat. */
 export const userIndexName = (userId: number) => `u:${userId}`;

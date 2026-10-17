@@ -1,0 +1,5 @@
+# The MTProto userbot needs a real user account; the Bot API cannot see common groups,
+# block a user or archive a chat. Telethon also brings aiohttp with it, but it is listed
+# explicitly because this program uses it directly.
+telethon>=1.36,<2
+aiohttp>=3.9,<4

@@ -21,6 +21,7 @@ const JOIN_MARKER_WINDOW_MS = 60 * 1000;
 const JOIN_PREFIX = 'join:';
 const CAPTURED_PREFIX = 'captured:';
 const JOIN_HISTORY_PREFIX = 'joins:';
+const VERIFIED = 'userbot-verified';
 
 /** More joins than this, inside the window, is a burst rather than a new member. */
 const JOIN_LIMIT = 3;
@@ -138,6 +139,23 @@ export class UserIndex extends DurableObject<Env> {
       await this.ctx.storage.put(key, kept);
       return kept.length > JOIN_LIMIT;
     });
+  }
+
+  /**
+   * Records that this user passed the PM userbot's verification.
+   *
+   * The userbot's only local state is a StringSession, and the message that proved the
+   * check is deleted on success. Without this marker, a later restart that sweeps recent
+   * dialogs — or a user who clears their own history — would look like a first contact
+   * and be gated again.
+   */
+  async markVerified(): Promise<void> {
+    await this.ctx.storage.put(VERIFIED, true);
+  }
+
+  /** Whether this user has already passed a PM verification. */
+  async verified(): Promise<boolean> {
+    return (await this.ctx.storage.get<boolean>(VERIFIED)) === true;
   }
 
   /**

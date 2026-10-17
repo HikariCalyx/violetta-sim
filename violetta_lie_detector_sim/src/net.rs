@@ -48,6 +48,10 @@ pub struct Snapshot {
     /// a guest bot afterwards), which makes the challenge start in chaos mode.
     #[serde(default)]
     pub chaos: bool,
+    /// The link came from the PM userbot, so there is no group membership to be
+    /// removed from and the result screen must not mention one.
+    #[serde(default)]
+    pub userbot: bool,
 }
 
 /// What the Worker answered after a pick.

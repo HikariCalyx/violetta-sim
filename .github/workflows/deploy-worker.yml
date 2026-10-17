@@ -12,12 +12,15 @@
 #   BOT_TOKEN              from @BotFather
 #   WEBHOOK_SECRET         any random string, 1-256 characters of A-Za-z0-9_- (that
 #                          charset is Telegram's own rule for a webhook secret token)
+#   API_HASH_SECRET        optional; the MTProto userbot's api_hash. When present it
+#                          is also pushed as USERBOT_API_HASH, which enables the
+#                          authenticated /api/userbot/* routes used by userbot/
 #
-# After the deploy this workflow pushes BOT_TOKEN and WEBHOOK_SECRET onto the Worker,
-# checks the deployed configuration, then registers the webhook. All of it is
-# idempotent, so the repository stays the single source of truth for what the Worker
-# holds. One bot can only have one webhook, though, so a second Worker deployed for
-# the same bot would take it over.
+# After the deploy this workflow pushes BOT_TOKEN, WEBHOOK_SECRET and (when it is set)
+# API_HASH_SECRET onto the Worker, checks the deployed configuration, then registers the
+# webhook. All of it is idempotent, so the repository stays the single source of truth for
+# what the Worker holds. One bot can only have one webhook, though, so a second Worker
+# deployed for the same bot would take it over.
 name: Deploy the verification Worker
 
 on:
@@ -70,6 +73,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          API_HASH_SECRET: ${{ secrets.API_HASH_SECRET }}
         run: |
           missing=""
           [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || missing="${missing} CLOUDFLARE_API_TOKEN"
@@ -80,7 +84,11 @@ jobs:
             echo "::error::Missing repository secret(s):${missing} — see the header of this workflow."
             exit 1
           fi
-          echo "All four repository secrets are present."
+          if [ -n "${API_HASH_SECRET:-}" ]; then
+            echo "All required secrets and API_HASH_SECRET are present."
+          else
+            echo "Required secrets are present; API_HASH_SECRET is absent, so /api/userbot/* stays disabled."
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -151,9 +159,15 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          API_HASH_SECRET: ${{ secrets.API_HASH_SECRET }}
         run: |
-          jq -n --arg bot "$BOT_TOKEN" --arg hook "$WEBHOOK_SECRET" \
-            '{BOT_TOKEN: $bot, WEBHOOK_SECRET: $hook}' > "$RUNNER_TEMP/secrets.json"
+          # The userbot hash is optional: without it the PM routes answer 503 and the
+          # rest of the Worker is unchanged. An empty value is left out rather than
+          # pushed, because an empty secret reads as a broken one from inside the Worker.
+          jq -n --arg bot "$BOT_TOKEN" --arg hook "$WEBHOOK_SECRET" --arg userbot "${API_HASH_SECRET:-}" \
+            '{BOT_TOKEN: $bot, WEBHOOK_SECRET: $hook}
+             + (if $userbot != "" then {USERBOT_API_HASH: $userbot} else {} end)' \
+            > "$RUNNER_TEMP/secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/secrets.json"
           # Names only — wrangler never prints a value back. This is what makes a silent
           # push visible in the job log, which is how this step once looked fine while the
@@ -168,6 +182,7 @@ jobs:
         run: |
           health=$(curl -fsS "$VERIFY_ORIGIN/api/health")
           echo "$health"
+          echo "$health" | jq -r '.config | "userbotApiHash=\(.userbotApiHash)"'
           echo "$health" | jq -e '.config.botToken == "set" and .config.webhookSecret == "set"' > /dev/null \
             || {
               echo "::error::The Worker reports BOT_TOKEN=$(echo "$health" | jq -r .config.botToken) and WEBHOOK_SECRET=$(echo "$health" | jq -r .config.webhookSecret). 'missing' means it never reached the Worker; 'empty' means it was pushed with no value."

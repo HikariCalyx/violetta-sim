@@ -44,18 +44,39 @@ pub fn show(
     words: Words,
     mode: Mode,
 ) -> Option<Next> {
-    let tries_left = verification
-        .and_then(|verification| verification.snapshot())
-        .map(|snapshot| snapshot.attempts_left);
+    let snapshot = verification.and_then(|verification| verification.snapshot());
+    let tries_left = snapshot.as_ref().map(|snapshot| snapshot.attempts_left);
     let tries = tries_left.map(|left| words.tries_left(left));
+    // A PM verification has no chat to be removed from, so its outcome never gets the
+    // group wording (and its success page has no "talk in the group" line either).
+    let userbot = snapshot.as_ref().is_some_and(|snapshot| snapshot.userbot);
 
     let (headline, detail, colour, retry) = match (outcome, tries_left) {
         // No session: the public simulator, which can always be played again.
         (Outcome::Success, None) => (words.success, None, GOLD, true),
         (Outcome::Failure, None) => (words.failed, None, RED, true),
-        (Outcome::Success, Some(_)) => (words.verified, Some(words.verified_detail), GOLD, false),
-        (Outcome::Expired, _) => (words.time_up, Some(words.removed), RED, false),
-        (Outcome::Failure, Some(0)) => (words.out_of_tries, Some(words.removed), RED, false),
+        (Outcome::Success, Some(_)) => (
+            words.verified,
+            if userbot {
+                None
+            } else {
+                Some(words.verified_detail)
+            },
+            GOLD,
+            false,
+        ),
+        (Outcome::Expired, _) => (
+            words.time_up,
+            if userbot { None } else { Some(words.removed) },
+            RED,
+            false,
+        ),
+        (Outcome::Failure, Some(0)) => (
+            words.out_of_tries,
+            if userbot { None } else { Some(words.removed) },
+            RED,
+            false,
+        ),
         (Outcome::Failure, Some(_)) => (words.failed, tries.as_deref(), RED, true),
     };
     // Chaos is what a cleared normal game leads on to, so it is offered there and

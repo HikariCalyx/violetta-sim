@@ -34,6 +34,78 @@ those two rights away — or removing the bot — is what stops it. That also me
 gates **every** chat where it holds them, so do not hand it admin rights somewhere it
 should keep quiet.
 
+## The PM userbot
+
+`userbot/` is a separate MTProto **user account**, because the Bot API has no way to list
+the groups you share with someone, block a user or archive a chat. It gates private
+messages:
+
+- A message from somebody who has **never talked to this account before** and shares
+  **fewer than three groups** triggers verification. "Never talked" means no message at
+  all before the one being handled (Telethon's `max_id` is exclusive, so the check passes
+  the current message id). The userbot sends the Violetta artwork with the invitation
+  text, creates a session, **blocks** the sender and **archives** the chat.
+- The session is the normal mini-game with **10 minutes and five tries**. Scoring stays
+  in the same `VerificationSession` object as the group gate, so the page cannot report
+  its own outcome.
+- Passing makes the Worker queue a cleanup in `UserbotInbox`: the userbot deletes its own
+  message (for both sides), unblocks the sender and moves the chat out of the archive.
+  The queue survives the userbot being offline; it drains every three seconds, and the
+  pass is recorded in the user's index so a restart (or a cleared history) cannot gate
+  them a second time.
+- Each run sends a heartbeat. The next run sweeps only the private dialogs whose latest
+  message arrived after that heartbeat, so a message sent during the hand-off between two
+  Actions runs is still caught.
+- Running out of time or tries leaves the sender blocked. The verification link then
+  says exactly:
+
+  > **Verify failed**
+  >
+  > You have failed verification.
+
+A PM verification is always normal mode, even if the same session also covers a group
+that was flagged as chaotic.
+
+### Running the userbot
+
+A user account cannot receive a webhook, so `.github/workflows/userbot.yml` runs the
+process for 5h45m per job and keeps an hourly schedule queued; the `concurrency` group
+allows only one account session to be connected at a time, and the next run takes over
+when the current one ends.
+
+One-time setup:
+
+1. Install the dependencies and create a `StringSession` on a trusted machine:
+   ```sh
+   pip install -r userbot/requirements.txt
+   python userbot/login.py
+   ```
+   The printed value is a logged-in account. Treat it like a password; never commit it.
+2. In **Settings → Secrets and variables → Actions**:
+
+   | Name | Kind | What it is |
+   | --- | --- | --- |
+   | `USERBOT_API_ID` | variable | the `api_id` from https://my.telegram.org |
+   | `API_HASH_SECRET` | secret | the `api_hash` from https://my.telegram.org; also pushed to the Worker as `USERBOT_API_HASH` |
+   | `USERBOT_SESSION` | secret | the value printed by `userbot/login.py` |
+   | `WORKER_ORIGIN` | optional variable | defaults to `https://violetta.trill.workers.dev` |
+
+3. Deploy the Worker once (the deploy workflow pushes `USERBOT_API_HASH`), then run
+   **Run the userbot** once from the Actions tab to confirm it connects.
+
+Notes:
+
+- Use a **dedicated account**, not your main one. A StringSession can read and send
+  everything the account can.
+- The userbot and the Worker derive the same bearer token from `API_HASH_SECRET`:
+  `sha256("violetta-userbot:" + api_hash)`. The api_hash itself never crosses the wire.
+- Scheduled workflows are disabled after 60 days without repository activity, and a
+  private repository pays Actions minutes for a nearly continuous job. GitHub also runs
+  `schedule` only from the **default branch**, so on another branch use **Run workflow**
+  (or merge first).
+- The account's common-group count and message history are read at the moment a PM first
+  arrives; deleting the old history does not make an old contact a stranger again.
+
 ## How it fits together
 
 | Piece | Where | Why |
@@ -102,6 +174,7 @@ the wasm bundle, checks its startup, typechecks the Worker and deploys — on ev
 | `CLOUDFLARE_ACCOUNT_ID` | the account id in the Cloudflare dashboard sidebar |
 | `BOT_TOKEN` | @BotFather |
 | `WEBHOOK_SECRET` | any random string, 1-256 characters of `A-Za-z0-9_-` |
+| `API_HASH_SECRET` | optional; the userbot's `api_hash`, also pushed as `USERBOT_API_HASH` |
 
 After the deploy the workflow pushes `BOT_TOKEN` and `WEBHOOK_SECRET` onto the Worker with
 `wrangler secret put`, cross-checks the deployed configuration through `/api/health` (it
@@ -124,6 +197,12 @@ The workflow and the Pages one both build the bundle, with different base paths 
 | `GET /telegram?session=<uuid>` | The game page (the same bundle as `/`) |
 | `GET /api/session/<uuid>/state` | `status`, `deadline`, `attemptsLeft`, the shuffle, `serverNow`, and `chaos` (the member was caught posting) |
 | `POST /api/session/<uuid>/pick` | `{ roundIndex, slot, elapsedMs }` — the only write the browser makes. A `slot` of 0 means "ran out of time": it scores as a miss instead of leaving the attempt open |
+| `POST /api/userbot/session` | Userbot only. `{ userId, userName }` → `{ sessionId, created }`; `created` says whether it still has to send the link |
+| `POST /api/userbot/session/<uuid>/sent` | Userbot only. `{ messageId }`, so a pass can delete that exact message |
+| `POST /api/userbot/session/<uuid>/abort` | Userbot only. Drops the PM side again when the send failed |
+| `GET /api/userbot/actions` | Userbot only. Pending pass cleanups (`userId`, `messageId`, `sessionId`) |
+| `POST /api/userbot/actions/<uuid>` | Userbot only. Acknowledges one cleanup after it ran |
+| `GET \| POST /api/userbot/heartbeat` | Userbot only. Reports or reads the last moment a run was alive; the next run sweeps from it |
 | `GET /api/health` | Liveness |
 
 `state` returns the session's outcome after it closes, so the page can say "you were

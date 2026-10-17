@@ -18,7 +18,9 @@
     "bindings": [
       { "name": "REGISTRY", "class_name": "ChatRegistry" },
       { "name": "USER_INDEX", "class_name": "UserIndex" },
-      { "name": "SESSION", "class_name": "VerificationSession" }
+      { "name": "SESSION", "class_name": "VerificationSession" },
+      // The PM userbot's cleanup outbox (verified chats to unblock and messages to delete).
+      { "name": "USERBOT_INBOX", "class_name": "UserbotInbox" }
     ]
   },
   // SQLite-backed Durable Objects are the ones that exist on the Workers Free plan.
@@ -26,6 +28,11 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ChatRegistry", "UserIndex", "VerificationSession"]
+    },
+    // A new tag is required for a class that did not exist in v1.
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["UserbotInbox"]
     }
   ],
 
@@ -37,6 +44,7 @@
   // Secrets are never stored here; set them once per environment:
   //   npx wrangler secret put BOT_TOKEN
   //   npx wrangler secret put WEBHOOK_SECRET
+  //   npx wrangler secret put USERBOT_API_HASH   # optional: enables /api/userbot/*
 
   // Serving on a domain of your own needs that domain to be a ZONE on this same Cloudflare
   // account — `*.workers.dev` can never be a custom domain. Once that is true, uncomment

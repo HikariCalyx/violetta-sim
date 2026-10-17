@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { userIndexName, type Env } from './env';
+import { USERBOT_INBOX_NAME, userIndexName, type Env } from './env';
 import { ROUNDS_PER_ATTEMPT, answerSlot, makeRounds, type RoundSet } from './rounds';
 import {
   CHAOS_MAX_ATTEMPTS,
@@ -18,14 +18,19 @@ import {
 
 /**
  * How many attempts a session gets. Chaos mode is both harder and longer, and gives
- * the member proportionally more tries.
+ * the member proportionally more tries. A PM verification is always normal mode and
+ * gets five tries, whatever made a chat session chaotic.
  */
-export const attemptLimit = (s: Pick<SessionState, 'chaos'>): number =>
-  s.chaos ? CHAOS_MAX_ATTEMPTS : MAX_ATTEMPTS;
+export const attemptLimit = (s: Pick<SessionState, 'chaos' | 'userbot'>): number =>
+  s.userbot ? USERBOT_MAX_ATTEMPTS : s.chaos ? CHAOS_MAX_ATTEMPTS : MAX_ATTEMPTS;
 
 /** How long the member has in a chat, from the join. */
 const muteSecondsFor = (s: Pick<SessionState, 'chaos'>): number =>
   s.chaos ? CHAOS_MUTE_SECONDS : MUTE_SECONDS;
+
+/** The PM side is always the normal game: ten minutes, five tries. */
+export const USERBOT_MUTE_SECONDS = 10 * 60;
+export const USERBOT_MAX_ATTEMPTS = 5;
 
 export type ChatEntryState =
   /** Muted and waiting; the alarm will kick this member. */
@@ -58,6 +63,18 @@ export interface PickRecord {
   correct: boolean;
 }
 
+/**
+ * The PM side of a verification: a stranger messaged the userbot, which sent them a
+ * link. Unlike a chat entry there is nobody to mute, so this only carries the window
+ * and the message to delete once the challenge is passed.
+ */
+export interface UserbotEntry {
+  /** The userbot's own message with the link, deleted once the stranger passes. */
+  messageId: number | null;
+  /** Unix ms. The ten minutes start when the session is created, just before the send. */
+  deadline: number;
+}
+
 export interface SessionState {
   sessionId: string;
   userId: number;
@@ -66,6 +83,8 @@ export interface SessionState {
   /** Failed games so far, shared by every chat in `chats`. */
   attempts: number;
   chats: Record<string, ChatEntry>;
+  /** A PM verification attached to this session; absent for a chat-only session. */
+  userbot?: UserbotEntry;
   set: RoundSet;
   /** Round the page is on; resets to 0 for a retry. */
   roundIndex: number;
@@ -114,9 +133,12 @@ export interface SessionSnapshot {
   roundIndex: number;
   /**
    * The challenge is played in chaos mode: the member posted before the mute landed,
-   * summoned a guest bot while muted, or kept rejoining this chat.
+   * summoned a guest bot while muted, or kept rejoining this chat. Always false for
+   * a PM verification.
    */
   chaos: boolean;
+  /** The link came from the userbot, so a closed session has its own outcome page. */
+  userbot: boolean;
 }
 
 /** What `pick` reports back. A closed session is not an error the page should retry. */
@@ -178,6 +200,40 @@ export class VerificationSession extends DurableObject<Env> {
     burst: boolean,
   ): Promise<SessionState> {
     return this.serialize(() => this.ensureLocked(userId, userName, chatId, title, burst));
+  }
+
+  /**
+   * Attaches a PM verification to this user's session.
+   *
+   * `created` is what tells the userbot whether it still has to send the message: a
+   * member who is already being verified in a chat gets the PM attached to that same
+   * session (one game, one counter), while a second message in the same burst must not
+   * send a second link.
+   */
+  async ensureUserbot(
+    userId: number,
+    userName: string,
+  ): Promise<{ state: SessionState; created: boolean }> {
+    return this.serialize(() => this.ensureUserbotLocked(userId, userName));
+  }
+
+  /** Records the id of the message the userbot sent, so a pass can delete it later. */
+  async attachUserbotMessage(messageId: number): Promise<boolean> {
+    return this.serialize(async () => {
+      const s = await this.read();
+      if (!s || s.status !== 'open' || !s.userbot) return false;
+      s.userbot.messageId = messageId;
+      await this.save(s);
+      return true;
+    });
+  }
+
+  /**
+   * Drops the PM side again: the userbot could not send its message, so there is no
+   * link to wait for. A chat verification that shares the session is left untouched.
+   */
+  async abortUserbot(): Promise<void> {
+    return this.serialize(() => this.abortUserbotLocked());
   }
 
   async pick(roundIndex: number, slot: number, elapsedMs: number): Promise<PickResult> {
@@ -276,6 +332,51 @@ export class VerificationSession extends DurableObject<Env> {
     return true;
   }
 
+  /** A fresh, open session. Shared by the chat and the PM entry points. */
+  private newState(userId: number, userName: string): SessionState {
+    return {
+      sessionId: this.ctx.id.name ?? crypto.randomUUID(),
+      userId,
+      userName,
+      status: 'open',
+      attempts: 0,
+      chats: {},
+      set: makeRounds(),
+      roundIndex: 0,
+      picks: [],
+      chaos: false,
+      suspicious: [],
+      createdAt: Date.now(),
+      closedAt: null,
+    };
+  }
+
+  private async ensureUserbotLocked(
+    userId: number,
+    userName: string,
+  ): Promise<{ state: SessionState; created: boolean }> {
+    let s = await this.read();
+    if (!s) s = this.newState(userId, userName);
+    // A closed session is the caller's cue to retry with a new one.
+    if (s.status !== 'open') return { state: s, created: false };
+    // Already attached: do not reset the window or hand out a second link.
+    if (s.userbot) return { state: s, created: false };
+
+    s.userbot = { messageId: null, deadline: Date.now() + USERBOT_MUTE_SECONDS * 1000 };
+    await this.save(s);
+    await this.arm(s);
+    return { state: s, created: true };
+  }
+
+  private async abortUserbotLocked(): Promise<void> {
+    const s = await this.read();
+    if (!s || s.status !== 'open' || !s.userbot) return;
+    s.userbot = undefined;
+    await this.save(s);
+    await this.arm(s);
+    if (!this.hasLiveWork(s)) await this.close(s, 'expired');
+  }
+
   private async ensureLocked(
     userId: number,
     userName: string,
@@ -284,23 +385,7 @@ export class VerificationSession extends DurableObject<Env> {
     burst: boolean,
   ): Promise<SessionState> {
     let s = await this.read();
-    if (!s) {
-      s = {
-        sessionId: this.ctx.id.name ?? crypto.randomUUID(),
-        userId,
-        userName,
-        status: 'open',
-        attempts: 0,
-        chats: {},
-        set: makeRounds(),
-        roundIndex: 0,
-        picks: [],
-        chaos: false,
-        suspicious: [],
-        createdAt: Date.now(),
-        closedAt: null,
-      };
-    }
+    if (!s) s = this.newState(userId, userName);
     // A closed session is the join handler's cue to start a new one.
     if (s.status !== 'open') return s;
 
@@ -375,18 +460,23 @@ export class VerificationSession extends DurableObject<Env> {
       await this.arm(s);
     }
     const restricted = Object.values(s.chats).filter((chat) => chat.state === 'restricted');
+    const deadlines = restricted.map((chat) => chat.deadline);
+    if (s.userbot) deadlines.push(s.userbot.deadline);
     return {
       sessionId: s.sessionId,
       status: s.status,
       serverNow: Date.now(),
-      deadline: restricted.length ? Math.min(...restricted.map((chat) => chat.deadline)) : null,
+      deadline: deadlines.length ? Math.min(...deadlines) : null,
       attempts: s.attempts,
       attemptsLeft: Math.max(0, attemptLimit(s) - s.attempts),
       chats: Object.values(s.chats).map((chat) => ({ title: chat.title, state: chat.state })),
       rounds: s.set.rounds.map((round) => round.order),
       special: s.set.special,
       roundIndex: s.roundIndex,
-      chaos: s.chaos,
+      // A PM verification is always the normal game, especially when a chat session
+      // that happens to share the object was flagged as chaotic.
+      chaos: s.userbot ? false : s.chaos,
+      userbot: Boolean(s.userbot),
     };
   }
 
@@ -462,7 +552,7 @@ export class VerificationSession extends DurableObject<Env> {
     entry.noticeId = null;
     await this.save(s);
     await this.arm(s);
-    if (!this.anyRestricted(s)) await this.close(s, 'expired');
+    if (!this.hasLiveWork(s)) await this.close(s, 'expired');
   }
 
   /**
@@ -484,11 +574,19 @@ export class VerificationSession extends DurableObject<Env> {
     }
     await this.save(s);
     await this.arm(s);
-    if (!this.anyRestricted(s)) await this.close(s, 'expired');
+    // A PM verification that ran out of time simply closes: the stranger stays
+    // blocked, and the link will say the verification failed. There is nobody to
+    // evict, because the userbot never muted anybody in a chat.
+    if (!this.hasLiveWork(s, now)) await this.close(s, 'expired');
   }
 
   private anyRestricted(s: SessionState): boolean {
     return Object.values(s.chats).some((chat) => chat.state === 'restricted');
+  }
+
+  /** Whether anything in this session still has a live deadline. */
+  private hasLiveWork(s: SessionState, now = Date.now()): boolean {
+    return this.anyRestricted(s) || Boolean(s.userbot && s.userbot.deadline > now);
   }
 
   private async save(s: SessionState): Promise<void> {
@@ -499,6 +597,9 @@ export class VerificationSession extends DurableObject<Env> {
     const deadlines = Object.values(s.chats)
       .filter((chat) => chat.state === 'restricted')
       .map((chat) => chat.deadline);
+    // Only a FUTURE PM deadline: an expired one would otherwise keep arming a fresh
+    // alarm one second out while a chat in the same session keeps the object open.
+    if (s.userbot && s.userbot.deadline > Date.now()) deadlines.push(s.userbot.deadline);
     if (deadlines.length) {
       // A floor of "now + 1s" keeps a clock skew from firing an alarm in the past, which
       // a Durable Object would run immediately (and then again after each re-arm).
@@ -538,6 +639,46 @@ export class VerificationSession extends DurableObject<Env> {
       await this.dropNotice(entry);
       entry.state = 'passed';
     }
+
+    if (s.userbot) {
+      // Persist the fact that this user passed, so a later sweep or a deleted history
+      // cannot treat them as a stranger again.
+      try {
+        const index = this.env.USER_INDEX.get(
+          this.env.USER_INDEX.idFromName(userIndexName(s.userId)),
+        );
+        await index.markVerified();
+      } catch (err) {
+        console.error(
+          'could not remember a PM verification',
+          { sessionId: s.sessionId, userId: s.userId },
+          err instanceof Error ? err.message : err,
+        );
+      }
+
+      // The Bot API cannot unblock, unarchive or delete a message in a userbot's PMs,
+      // so the userbot itself does that when it next polls its inbox. Queued before the
+      // session closes, so a pass cannot be recorded without the cleanup following it.
+      try {
+        const inbox = this.env.USERBOT_INBOX.get(
+          this.env.USERBOT_INBOX.idFromName(USERBOT_INBOX_NAME),
+        );
+        await inbox.enqueue({
+          kind: 'verified',
+          sessionId: s.sessionId,
+          userId: s.userId,
+          messageId: s.userbot.messageId,
+        });
+      } catch (err) {
+        console.error(
+          'could not queue the userbot cleanup',
+          { sessionId: s.sessionId, userId: s.userId },
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return;
+    }
+
     await tryCallTelegram(this.env, 'sendMessage', {
       chat_id: s.userId,
       text: 'Verified — welcome! You can talk in the group now.',
