@@ -62,15 +62,15 @@ const COUNTDOWN_DIGITS: usize = 5;
 const REVEAL_SECONDS: f64 = 5.0;
 /// How long the characters take to change places.
 ///
-/// The game's own UI data names this as its shuffle animation delay (2500 ms),
-/// and the walk is long enough for the characters to make their way into the
-/// background and back.
-const WALK_SECONDS: f64 = 2.5;
+/// The game's own UI data names this as its shuffle animation delay, at 2500 ms;
+/// the walk here is given longer, because every leg of it goes along one axis rather
+/// than straight to the next place.
+const WALK_SECONDS: f64 = 5.0;
 /// How long the player has to pick a position.
 const ANSWER_SECONDS: f64 = 5.0;
 /// How much of the stage lights shows once the masks are on, and how long they
 /// take to come up or go out again.
-const LIGHT_ALPHA: f32 = 0.60;
+const LIGHT_ALPHA: f32 = 0.80;
 const LIGHT_FADE_SECONDS: f64 = 0.5;
 /// How often the stage lights change colour, and the colours they cycle through:
 /// the lamp of a roulette wheel, stepping on twice a second.

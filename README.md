@@ -162,7 +162,7 @@ it acts as a mask for the layers under it:
 3. the pattern the lamps throw up — two dozen faint copies of `npc.stand.0` at
    random places and strengths, laid over the characters and scattered afresh
    every round;
-4. the stage lights, at 60% and cycling colour twice a second once the masks are
+4. the stage lights, at 80% and cycling colour twice a second once the masks are
    on — over the characters, so the light falls on them, and still under the
    frame;
 5. the window frame;
@@ -181,31 +181,51 @@ open, the others look asleep. A round runs through `Phase` in
 | Phase | What happens | How long |
 | --- | --- | --- |
 | `Countdown` | the game's standby dialog, with the seconds left written into the blank its instruction line leaves before "sec until the Lie Detector mini-game starts." | 1 s per digit, 5 digits |
-| `Reveal` | the four characters appear in the front row, one to a slot, and the glow rests on the special one | 5 s |
+| `Reveal` | the four characters appear one row upstage of the front, one to a slot, and the glow rests on the special one | 5 s |
 | `Ready` | the `READY` stamp | the 12 frames of the stamp |
 | `Start` | the `START` banner over the window | the 5 frames of the banner |
-| `MaskOn` | the masks go on while the stage lights come up to 60%, flicking colour twice a second from then on | the 6 frames of the mask |
-| `Swap` | the characters walk to new slots, each at a depth of its own, all looking alike | 2.5 s, the game's own shuffle animation delay |
+| `MaskOn` | the masks go on while the stage lights come up to 80%, flicking colour twice a second from then on | the 6 frames of the mask |
+| `Swap` | the characters swap slots, each at a depth of its own and one of them keeping the slot it already has, all looking alike | 5 s |
 | `Pick` | the answer buttons are live; the pick lands in the readout, and the device's gauge drains as its number counts the seconds down | 5 s, or until a click |
 | `MaskOff` | the lights go out, then the masks come off | fade + the 6 mask frames |
 | `Success`/`Failed` | the matching banner, then the result screen | the frames of the banner |
 
 Each character stands in a *slot* (left to right) and a *row* (front to back), and
-they all stand in the front row (`layout::FRONT_ROW`), one to a slot — lined up
-across the stage and never overlapping, which is what the game does for the reveal
-and again for the picks.
+they all stand in `layout::STAND_ROW` — one row upstage of the front
+(`layout::FRONT_ROW`), one to a slot, lined up across the stage and never
+overlapping, which is what the game does for the reveal and again for the picks.
+None of them is placed exactly on the centre of its slot either: each is given a small
+random offset when a game starts (`characters::OFFSET_X` and `OFFSET_Y`, up to 8 px
+sideways and 4 px in height, kept for the whole game), so the line they stand in is
+placed rather than drawn.
 
-A round sends each of them back to a row of its own: `layout::WALK_ROWS` hands out
-every row behind the front one, one each, so the four are never at the same depth
-while they shuffle. Since the masks make the four identical, that depth is all that
-tells them apart when their paths cross: a row further back is drawn smaller
-(`layout::DEPTH_SCALE`, a fifth a row — the deepest is two fifths the size of the
-front one) and a little higher up the window (`layout::DEPTH_STEP`).
+A round sends each of them into a row of its own: `layout::WALK_ROWS` hands out the
+front row and the three deepest, one each, so the four are never at the same depth
+while they shuffle and exactly one of them crosses the front of the stage. None of
+those rows is the one they stand at, which is what keeps the step into the walk and
+the step back out of it real moves rather than a character pausing in place.
+
+One of the four — a different one each round — crosses nothing at all: it keeps the
+slot it is standing in and only steps out of it into its row and back, while the other
+three swap among the places that are left. That is the character a player can follow
+without watching the rest, which is why which one it is changes from round to round.
+
+Depth is measured from the row they stand at, so that is where a character is drawn at
+its own size (`layout::CHARACTER_PIVOT_Y` and `layout::DEPTH_SCALE` are both fitted to
+it) with its feet on the floor. The row it walks is what makes the difference: further
+back is smaller and higher up the window, and the front row is a quarter larger and a
+step lower down than the four of them stand. Since the masks make the four identical,
+that size and height is all that tells them apart when their paths cross —
+`layout::DEPTH_SCALE` is a fifth a row and `layout::DEPTH_STEP` is the height, so the
+deepest of them walks at half the size they stand at.
 
 A round does not send them straight to their new slot either: each one is given a
-path of four places — where it stands, two places at its own depth, and where it
-ends up — so it steps upstage (shrinking as it goes), wanders across behind the
-others, and comes forward again to full size. Every character on the move plays the
+path of six places — where it stands, its walking depth, three places at that depth,
+and where it ends up — so it steps into that row (changing size as it goes, and the
+one at the front growing), wanders across behind the others, and steps back to
+standing depth in its new slot. Every leg of that path goes along
+one axis, a sideways step or a forward one and never both, so no character ever
+slides across the stage on the diagonal. Every character on the move plays the
 walk cycle, including one that was handed its own slot back and so walks out and
 back to where it started; drawing one of them from the stand instead would leave it
 sliding across the stage as a still picture. The walk cycle (`npcCommon.move`) shows
