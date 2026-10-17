@@ -45,6 +45,10 @@ messages:
   all before the one being handled (Telethon's `max_id` is exclusive, so the check passes
   the current message id). The userbot sends the Violetta artwork with the invitation
   text, creates a session, **blocks** the sender and **archives** the chat.
+- The invitation follows the recipient's Telegram `lang_code`: `zh-hans`/`zh-CN` →
+  Simplified Chinese, `zh-hant`/`zh-TW`/`zh-HK` → Traditional Chinese, `ja` → Japanese,
+  `ko` → Korean, everything else → English (`userbot/languages.py`). The character names
+  match the game's own localisations.
 - The session is the normal mini-game with **10 minutes and five tries**. Scoring stays
   in the same `VerificationSession` object as the group gate, so the page cannot report
   its own outcome.

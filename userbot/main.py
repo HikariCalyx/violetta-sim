@@ -30,6 +30,11 @@ from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError, RPCError
 from telethon.sessions import StringSession
 
+try:
+    from .languages import preferred_language, verification_message
+except ImportError:  # running as `python userbot/main.py`
+    from languages import preferred_language, verification_message
+
 LOG = logging.getLogger("violetta-userbot")
 
 # Telegram's archive is folder 1; 0 is the main chat list.
@@ -57,14 +62,6 @@ def _optional_int(name: str, default: int) -> int:
 MAX_RUNTIME_SECONDS = _optional_int("MAX_RUNTIME_SECONDS", 0)
 TRIGGER_MAX_AGE_SECONDS = _optional_int("TRIGGER_MAX_AGE_SECONDS", 30 * 60)
 PHOTO = Path(os.environ.get("USERBOT_PHOTO", str(DEFAULT_PHOTO))).expanduser()
-
-MESSAGE = (
-    "Princess Violetta told me that you must pass her test or marry her before you can talk to me.\n"
-    "\n"
-    "I guess you don't want to marry her right?\n"
-    "To pass her test, click following link:\n"
-    "{url}"
-)
 
 
 def _required(name: str) -> str:
@@ -308,12 +305,15 @@ async def _verify(client: TelegramClient, worker: Worker, sender: Any) -> None:
     # session and died before recording its send; finishing the job from here is safe.
 
     link = f"{worker.origin}/telegram?session={session_id}"
+    # Telegram puts the recipient's own client language on the User object. A member
+    # who never chose one has `lang_code` unset, and gets the English wording.
+    lang_code = getattr(sender, "lang_code", None)
     sent = None
     try:
         sent = await client.send_file(
             sender,
             str(PHOTO),
-            caption=MESSAGE.format(url=link),
+            caption=verification_message(lang_code, link),
             parse_mode=None,
         )
         await worker.sent(session_id, sent.id)
@@ -347,7 +347,12 @@ async def _verify(client: TelegramClient, worker: Worker, sender: Any) -> None:
     except Exception:  # noqa: BLE001
         LOG.exception("could not archive the chat with user %s", sender.id)
 
-    LOG.info("verification sent to %s (%s)", sender.id, session_id)
+    LOG.info(
+        "verification sent to %s (%s, %s)",
+        sender.id,
+        session_id,
+        preferred_language(lang_code),
+    )
 
 
 async def _process_private_message(
