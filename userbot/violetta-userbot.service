@@ -1,0 +1,48 @@
+# systemd unit for running the MTProto userbot on a VPS.
+#
+# Install:
+#   sudo cp userbot/violetta-userbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now violetta-userbot
+#
+# The environment file is read by systemd as root before the service drops to
+# `violetta`; keep it readable by root only (chmod 600).
+#
+# The checkout is expected at /opt/violetta (see the VPS section of worker/README.md).
+# The process only reads the checkout, so ProtectSystem=strict is safe together with
+# PYTHONDONTWRITEBYTECODE=1. If you put the checkout somewhere else, change
+# WorkingDirectory/ExecStart and add the matching ReadWritePaths only if needed.
+[Unit]
+Description=Violetta PM verification userbot
+After=network-online.target
+Wants=network-online.target
+# If the session or the configuration is wrong, stop flapping and leave a readable
+# failed unit instead of restarting every five seconds forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=violetta
+Group=violetta
+WorkingDirectory=/opt/violetta
+EnvironmentFile=/etc/violetta-userbot.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/violetta/.venv/bin/python /opt/violetta/userbot/main.py
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+# Read-only filesystem, no privilege escalation, private /tmp.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
