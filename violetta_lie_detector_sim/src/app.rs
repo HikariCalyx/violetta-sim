@@ -7,7 +7,7 @@ use egui::{Align, CentralPanel, Color32, Frame, Layout, RichText, Ui};
 use crate::assets::{self, Textures};
 use crate::language::{self, Words};
 use crate::net::{self, Verification};
-use crate::screens::{self, BACKGROUND, Outcome, game::GameScreen};
+use crate::screens::{self, BACKGROUND, Mode, Outcome, game::GameScreen};
 
 /// Which screen the app is currently showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,8 @@ pub enum Screen {
 /// Root of the app: owns the shared state and dispatches to the screens.
 pub struct LieDetectorApp {
     screen: Screen,
+    /// The mode the current game was started in, which *Try Again* keeps.
+    mode: Mode,
     game: GameScreen,
     textures: Textures,
     /// The verification this page was opened for, when the bot's link brought the
@@ -62,6 +64,7 @@ impl LieDetectorApp {
             } else {
                 Screen::Start
             },
+            mode: Mode::Normal,
             game: GameScreen::new(),
             textures,
             verification,
@@ -69,11 +72,12 @@ impl LieDetectorApp {
         }
     }
 
-    /// Starts a new game. The seed comes from the clock, so no two games lay the
-    /// characters out the same way.
-    fn start_game(&mut self, ui: &Ui) {
+    /// Starts a new game in `mode`. The seed comes from the clock, so no two games
+    /// lay the characters out the same way.
+    fn start_game(&mut self, ui: &Ui, mode: Mode) {
         let time = ui.input(|input| input.time);
-        self.game.restart(ui.ctx(), &mut self.textures, time);
+        self.game.restart(ui.ctx(), &mut self.textures, time, mode);
+        self.mode = mode;
         self.started = true;
         self.screen = Screen::Game;
     }
@@ -116,8 +120,8 @@ impl eframe::App for LieDetectorApp {
 
         match self.screen {
             Screen::Start => {
-                if screens::start::show(ui, &mut self.textures) {
-                    self.start_game(ui);
+                if let Some(mode) = screens::start::show(ui, &mut self.textures) {
+                    self.start_game(ui, mode);
                 }
             }
             Screen::Game => {
@@ -140,7 +144,8 @@ impl eframe::App for LieDetectorApp {
                     self.started = false;
                     self.screen = Screen::Game;
                     if self.verification.is_none() {
-                        self.start_game(ui);
+                        // A retry stays at the setting the game was played at.
+                        self.start_game(ui, self.mode);
                     }
                 }
             }

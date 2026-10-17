@@ -8,7 +8,7 @@ use egui::{
 
 use crate::assets::{self, Textures};
 use crate::language;
-use crate::screens::BACKGROUND;
+use crate::screens::{BACKGROUND, Mode};
 
 /// The video the background photograph is a still from, which the credit links to.
 const CREDIT_URL: &str = "https://www.youtube.com/watch?v=K7MTgHeFrYc";
@@ -17,9 +17,17 @@ const CREDIT: &str = "Background Image Credit:";
 /// How far the credit sits from the bottom-left corner of the screen.
 const CREDIT_MARGIN: f32 = 10.0;
 
-/// Draws the title screen and reports whether *Start* was clicked.
-pub fn show(ui: &mut Ui, textures: &mut Textures) -> bool {
-    let mut start_clicked = false;
+/// The English name of the second button, which a language without a name of its
+/// own keeps.
+const CHAOS: &str = "Chaos Mode";
+/// The red the chaos button is filled with, so it reads as the harder of the two.
+const CHAOS_FILL: Color32 = Color32::from_rgb(0x84, 0x00, 0x00);
+/// How far the chaos button sits below *Start*.
+const CHAOS_GAP: f32 = 16.0;
+
+/// Draws the title screen and reports which of its buttons was clicked.
+pub fn show(ui: &mut Ui, textures: &mut Textures) -> Option<Mode> {
+    let mut chosen = None;
 
     CentralPanel::default()
         .frame(Frame::NONE.fill(BACKGROUND))
@@ -43,14 +51,24 @@ pub fn show(ui: &mut Ui, textures: &mut Textures) -> bool {
                 )
                 .min_size(egui::vec2(180.0, 52.0));
                 if ui.add(start).clicked() {
-                    start_clicked = true;
+                    chosen = Some(Mode::Normal);
+                }
+
+                ui.add_space(CHAOS_GAP);
+
+                let label = language::words(textures.language()).chaos.unwrap_or(CHAOS);
+                let chaos = Button::new(RichText::new(label).size(22.0).color(Color32::WHITE))
+                    .min_size(egui::vec2(180.0, 52.0))
+                    .fill(CHAOS_FILL);
+                if ui.add(chaos).clicked() {
+                    chosen = Some(Mode::Chaos);
                 }
             });
         });
 
     draw_credit(ui);
 
-    start_clicked
+    chosen
 }
 
 /// Fills the screen with the background photograph.

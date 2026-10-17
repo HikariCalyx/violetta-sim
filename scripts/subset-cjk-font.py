@@ -47,12 +47,20 @@ def localised_strings():
     the words the screens write — the buttons, the outcomes, and the chrome the
     bot's verification adds. So this reads from each `Some("xx") =>` up to the next
     arm and takes every literal in between, which covers a one-string row as well as
-    a thirteen-field one.
+    a fourteen-field one.
     """
     source = open(LANGUAGE_RS, encoding="utf-8").read()
     strings = {}
 
-    arms = re.finditer(r'Some\("(\w\w)"\) =>(?P<body>.*?)(?=Some\("|_ =>|\Z)', source, re.S)
+    # An arm begins with the language code, indented one level inside the `match`.
+    # The indentation is part of the pattern because a field may hold a nested
+    # `Some("…")` (the chaos-mode name), which a bare `Some("` lookahead would take
+    # for the start of the next arm and cut the row short at.
+    arms = re.finditer(
+        r'\n        Some\("(\w\w)"\) =>(?P<body>.*?)(?=\n        Some\("|\n        _ =>)',
+        source,
+        re.S,
+    )
     for arm in arms:
         language = arm.group(1)
         text = "".join(re.findall(r'"([^"]*)"', arm.group("body")))

@@ -20,3 +20,50 @@ pub enum Outcome {
     /// with a session can end this way.
     Expired,
 }
+
+/// Which of the game's two settings a game is played at.
+///
+/// Chaos mode is the second button on the title screen: the four are shuffled for
+/// longer and three times as far, the lamps throw up twice as many figures at half
+/// again their strength, and the player has less time to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The game as it is normally played.
+    Normal,
+    /// The same game, made harder to follow.
+    Chaos,
+}
+
+impl Mode {
+    /// How long the characters take to change places.
+    ///
+    /// The game's own UI data names this as its shuffle animation delay, at 2500 ms;
+    /// the walk here is given longer, because every leg of it goes along one axis
+    /// rather than straight to the next place.
+    pub fn walk_seconds(self) -> f64 {
+        match self {
+            Self::Normal => 5.0,
+            Self::Chaos => 7.0,
+        }
+    }
+
+    /// How many times the four change places in one round.
+    ///
+    /// Each pass carries every character out of its slot into a row of its own and
+    /// back to standing depth in a new one, so chaos mode shuffles the stage three
+    /// times over before it asks for an answer.
+    pub fn shuffle_passes(self) -> usize {
+        match self {
+            Self::Normal => 1,
+            Self::Chaos => 3,
+        }
+    }
+
+    /// How long the player has to pick a position.
+    pub fn answer_seconds(self) -> f64 {
+        match self {
+            Self::Normal => 5.0,
+            Self::Chaos => 3.0,
+        }
+    }
+}
