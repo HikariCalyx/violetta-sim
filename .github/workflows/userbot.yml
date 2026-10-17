@@ -1,0 +1,76 @@
+# Runs the MTProto userbot that gates the PMs of the Violetta account.
+#
+# A user account cannot be woken by a webhook, so this is a long-running job instead.
+# Each run lives for 5h45m (inside GitHub's 6-hour job limit) and the hourly schedule
+# keeps a replacement queued; `concurrency` makes sure only one account session is
+# connected at a time. The session is a StringSession, so a reconnect never needs a
+# login code.
+#
+# One-time setup, in the repository: Settings → Secrets and variables → Actions
+#   Variables: USERBOT_API_ID   the api_id from https://my.telegram.org
+#   Secret:    API_HASH_SECRET  the api_hash from https://my.telegram.org
+#   Secret:    USERBOT_SESSION  printed by `python userbot/login.py` (see worker/README.md)
+#   Optional variable: WORKER_ORIGIN   defaults to https://violetta.trill.workers.dev
+#
+# The Worker also needs API_HASH_SECRET (pushed as USERBOT_API_HASH by the deploy
+# workflow), because both sides derive the same bearer token from it.
+name: Run the userbot
+
+on:
+  schedule:
+    # Hourly. A run outlives the next few schedules; the pending one takes over when it
+    # ends, so coverage is continuous apart from the hand-off between runs.
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+# GitHub keeps at most one pending run per group, which is exactly what is wanted here:
+# the next run starts when the current one finishes, and a second account session can
+# never connect in parallel.
+concurrency:
+  group: userbot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  userbot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      # api_id is not secret; accept it from a variable and fall back to a secret for
+      # repositories that store everything in Secrets.
+      USERBOT_API_ID: ${{ vars.USERBOT_API_ID || secrets.USERBOT_API_ID }}
+      API_HASH_SECRET: ${{ secrets.API_HASH_SECRET }}
+      USERBOT_SESSION: ${{ secrets.USERBOT_SESSION }}
+      WORKER_ORIGIN: ${{ vars.WORKER_ORIGIN || 'https://violetta.trill.workers.dev' }}
+      # 5h45m, so the process disconnects itself before the job timeout. The next
+      # scheduled run is already queued by then.
+      MAX_RUNTIME_SECONDS: "20700"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        run: |
+          missing=""
+          [ -n "${USERBOT_API_ID:-}" ] || missing="${missing} USERBOT_API_ID"
+          [ -n "${API_HASH_SECRET:-}" ] || missing="${missing} API_HASH_SECRET"
+          [ -n "${USERBOT_SESSION:-}" ] || missing="${missing} USERBOT_SESSION"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing userbot configuration:${missing} — see the header of this workflow."
+            exit 1
+          fi
+          echo "The userbot configuration is present."
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: userbot/requirements.txt
+
+      - name: Install the userbot's dependencies
+        run: pip install --disable-pip-version-check -r userbot/requirements.txt
+
+      - name: Run the userbot
+        run: python userbot/main.py
