@@ -61,11 +61,14 @@ pub fn title(language: Option<&'static str>) -> &'static str {
 /// the buttons, and how the result screen reports the outcome.
 ///
 /// These are what the game's own wording is for, so they are short: a caption
-/// over an outcome, and two buttons.
+/// over an outcome, and the three buttons.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
     /// The button that starts a game.
     pub start: &'static str,
+    /// The name of the chaos-mode button, where the language has one of its own. A
+    /// language that leaves it `None` keeps the English name on the button.
+    pub chaos: Option<&'static str>,
     /// The button that starts another one.
     pub try_again: &'static str,
     /// How a game the player won is reported.
@@ -78,12 +81,14 @@ impl Words {
     /// A language's words, spelled out as the app itself writes them.
     const fn new(
         start: &'static str,
+        chaos: Option<&'static str>,
         try_again: &'static str,
         success: &'static str,
         failed: &'static str,
     ) -> Self {
         Self {
             start,
+            chaos,
             try_again,
             success,
             failed,
@@ -103,11 +108,11 @@ impl Words {
 /// `const` item per language, which is one table too many.
 pub fn words(language: Option<&'static str>) -> Words {
     match language {
-        Some("cn") => Words::new("开始", "再试一次", "成功", "失败"),
-        Some("jp") => Words::new("スタート", "もう一度", "成功", "失敗"),
-        Some("kr") => Words::new("시작", "다시하기", "성공", "실패"),
-        Some("tw") => Words::new("開始", "再試一次", "成功", "失敗"),
-        _ => Words::new("Start", "Try Again", "Success", "Failed"),
+        Some("cn") => Words::new("开始", Some("进阶模式"), "再试一次", "成功", "失败"),
+        Some("jp") => Words::new("スタート", Some("カオスモード"), "もう一度", "成功", "失敗"),
+        Some("kr") => Words::new("시작", Some("카오스 모드"), "다시하기", "성공", "실패"),
+        Some("tw") => Words::new("開始", Some("混沌模式"), "再試一次", "成功", "失敗"),
+        _ => Words::new("Start", None, "Try Again", "Success", "Failed"),
     }
 }
 
@@ -180,15 +185,18 @@ mod tests {
 
     /// Everything the app writes for itself in `language`: its name, and then the
     /// words the screens are captioned and buttoned with.
-    fn localised_strings(language: &'static str) -> [&'static str; 5] {
+    fn localised_strings(language: &'static str) -> Vec<&'static str> {
         let words = super::words(Some(language));
-        [
+        let mut strings = vec![
             super::title(Some(language)),
             words.start,
             words.try_again,
             words.success,
             words.failed,
-        ]
+        ];
+        // A language that has not named the mode draws the English name instead.
+        strings.extend(words.chaos);
+        strings
     }
 
     #[test]
@@ -209,12 +217,27 @@ mod tests {
                 );
             }
 
+            if let Some(chaos) = words.chaos {
+                assert_ne!(
+                    chaos, "Chaos Mode",
+                    "`{language}`'s `chaos` is still the English one"
+                );
+            }
+
             assert_ne!(
                 super::title(Some(language)),
                 super::title(None),
                 "`{language}` has no localised name in `language::title`"
             );
         }
+    }
+
+    /// The two Chinese translations name the mode differently: the mainland one
+    /// calls it the advanced mode, the Taiwanese one keeps the word for chaos.
+    #[test]
+    fn the_chinese_name_the_chaos_button() {
+        assert_eq!(super::words(Some("cn")).chaos, Some("进阶模式"));
+        assert_eq!(super::words(Some("tw")).chaos, Some("混沌模式"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use egui::Ui;
 
 use crate::assets::{self, Textures};
 use crate::language;
-use crate::screens::{self, Outcome, game::GameScreen};
+use crate::screens::{self, Mode, Outcome, game::GameScreen};
 
 /// Which screen the app is currently showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum Screen {
 /// Root of the app: owns the shared state and dispatches to the screens.
 pub struct LieDetectorApp {
     screen: Screen,
+    /// The mode the current game was started in, which *Try Again* keeps.
+    mode: Mode,
     game: GameScreen,
     textures: Textures,
 }
@@ -42,16 +44,18 @@ impl LieDetectorApp {
 
         Self {
             screen: Screen::Start,
+            mode: Mode::Normal,
             game: GameScreen::new(),
             textures,
         }
     }
 
-    /// Starts a new game. The seed comes from the clock, so no two games lay the
-    /// characters out the same way.
-    fn start_game(&mut self, ui: &Ui) {
+    /// Starts a new game in `mode`. The seed comes from the clock, so no two games
+    /// lay the characters out the same way.
+    fn start_game(&mut self, ui: &Ui, mode: Mode) {
         let time = ui.input(|input| input.time);
-        self.game.restart(ui.ctx(), &mut self.textures, time);
+        self.game.restart(ui.ctx(), &mut self.textures, time, mode);
+        self.mode = mode;
         self.screen = Screen::Game;
     }
 }
@@ -60,8 +64,8 @@ impl eframe::App for LieDetectorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         match self.screen {
             Screen::Start => {
-                if screens::start::show(ui, &mut self.textures) {
-                    self.start_game(ui);
+                if let Some(mode) = screens::start::show(ui, &mut self.textures) {
+                    self.start_game(ui, mode);
                 }
             }
             Screen::Game => {
@@ -72,7 +76,8 @@ impl eframe::App for LieDetectorApp {
             Screen::Result(outcome) => {
                 let words = language::words(self.textures.language());
                 if screens::result::show(ui, outcome, words) {
-                    self.start_game(ui);
+                    // A retry stays at the setting the game was played at.
+                    self.start_game(ui, self.mode);
                 }
             }
         }

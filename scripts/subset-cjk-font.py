@@ -51,7 +51,11 @@ def localised_strings():
     for language, name in re.findall(r'Some\("(\w\w)"\) => "([^"]+)",', source):
         strings[language] = name
 
-    for language, arguments in re.findall(r'Some\("(\w\w)"\) => Words::new\(([^)]*)\),', source):
+    # The arguments may hold nested parentheses (`Some("…")` for a word a language
+    # has not named), so a row is read to the last `),` on its line rather than to
+    # the first `)`. The table keeps one language to a line, which is what this
+    # relies on.
+    for language, arguments in re.findall(r'Some\("(\w\w)"\) => Words::new\(([^\n]*)\),', source):
         for word in re.findall(r'"([^"]*)"', arguments):
             strings[language] = strings.get(language, "") + word
 

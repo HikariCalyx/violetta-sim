@@ -33,7 +33,7 @@ mod widgets;
 use egui::{CentralPanel, Color32, Context, Frame, Rect, Ui};
 
 use crate::assets::{self, Textures};
-use crate::screens::{BACKGROUND, Outcome};
+use crate::screens::{BACKGROUND, Mode, Outcome};
 
 use characters::{Character, Pose};
 use rng::Rng;
@@ -60,14 +60,6 @@ const COUNTDOWN_SECONDS: f64 = 5.0;
 const COUNTDOWN_DIGITS: usize = 5;
 /// How long the glow rests on the special character before the round opens.
 const REVEAL_SECONDS: f64 = 5.0;
-/// How long the characters take to change places.
-///
-/// The game's own UI data names this as its shuffle animation delay, at 2500 ms;
-/// the walk here is given longer, because every leg of it goes along one axis rather
-/// than straight to the next place.
-const WALK_SECONDS: f64 = 5.0;
-/// How long the player has to pick a position.
-const ANSWER_SECONDS: f64 = 5.0;
 /// How much of the stage lights shows once the masks are on, and how long they
 /// take to come up or go out again.
 const LIGHT_ALPHA: f32 = 0.80;
@@ -119,6 +111,8 @@ enum Phase {
 /// The lie detector screen.
 pub struct GameScreen {
     phase: Phase,
+    /// Which setting the game is being played at.
+    mode: Mode,
     /// Value of `InputState::time` at which the current phase started.
     phase_started: f64,
     /// Randomness for the character positions and the swaps.
@@ -140,12 +134,14 @@ pub struct GameScreen {
 
 impl GameScreen {
     pub fn new() -> Self {
+        let mode = Mode::Normal;
         let mut rng = Rng::new(rng::seed(0.0));
         let characters = characters::spawn(&mut rng);
-        let pattern = pattern::Pattern::scatter(&mut rng);
+        let pattern = pattern::Pattern::scatter(&mut rng, mode);
 
         Self {
             phase: Phase::Countdown,
+            mode,
             phase_started: 0.0,
             rng,
             characters,
@@ -157,12 +153,13 @@ impl GameScreen {
         }
     }
 
-    /// Starts a new game: a fresh set of characters, and the artwork decoded
-    /// while the countdown is on screen.
-    pub fn restart(&mut self, ctx: &Context, textures: &mut Textures, time: f64) {
+    /// Starts a new game in `mode`: a fresh set of characters, and the artwork
+    /// decoded while the countdown is on screen.
+    pub fn restart(&mut self, ctx: &Context, textures: &mut Textures, time: f64, mode: Mode) {
+        self.mode = mode;
         self.rng = Rng::new(rng::seed(time));
         self.characters = characters::spawn(&mut self.rng);
-        self.pattern = pattern::Pattern::scatter(&mut self.rng);
+        self.pattern = pattern::Pattern::scatter(&mut self.rng, mode);
         self.picks = [None; ANSWERS];
         self.verdicts = [false; ANSWERS];
         self.round = 0;
@@ -243,12 +240,12 @@ impl GameScreen {
                 }
             }
             Phase::Swap => {
-                if elapsed >= WALK_SECONDS {
+                if elapsed >= self.mode.walk_seconds() {
                     self.enter(Phase::Pick, time);
                 }
             }
             Phase::Pick => {
-                if elapsed >= ANSWER_SECONDS {
+                if elapsed >= self.mode.answer_seconds() {
                     // Running out of time ends the game where it stands: the rounds
                     // that were left are never played.
                     self.enter(Phase::MaskOff, time);
@@ -286,7 +283,7 @@ impl GameScreen {
         self.phase = phase;
         self.phase_started = time;
         if phase == Phase::Swap {
-            characters::shuffle(&mut self.characters, &mut self.rng);
+            characters::shuffle(&mut self.characters, &mut self.rng, self.mode);
         }
     }
 
@@ -299,7 +296,7 @@ impl GameScreen {
 
         // A fresh scatter for the round that follows, so the shapes the player was
         // reading are not the ones they are reading next.
-        self.pattern = pattern::Pattern::scatter(&mut self.rng);
+        self.pattern = pattern::Pattern::scatter(&mut self.rng, self.mode);
 
         self.round += 1;
         if self.round == ANSWERS {
@@ -457,7 +454,7 @@ impl GameScreen {
             characters::Step {
                 pose,
                 tick,
-                walked: (elapsed / WALK_SECONDS).clamp(0.0, 1.0) as f32,
+                walked: (elapsed / self.mode.walk_seconds()).clamp(0.0, 1.0) as f32,
                 pickable: self.phase == Phase::Pick,
             },
         );
@@ -532,7 +529,8 @@ impl GameScreen {
             return;
         }
         let elapsed = time - self.phase_started;
-        let left = (1.0 - elapsed / ANSWER_SECONDS).clamp(0.0, 1.0) as f32;
+        let answer_seconds = self.mode.answer_seconds();
+        let left = (1.0 - elapsed / answer_seconds).clamp(0.0, 1.0) as f32;
 
         let (left_x, top, right_x, bottom) = layout::TIMER_TRACK;
         // The gauge is drained from its right-hand end, so what is left of it stays
@@ -543,7 +541,7 @@ impl GameScreen {
         );
         ui.painter().rect_filled(gauge, 0.0, TIMER_FILL);
 
-        let seconds = (ANSWER_SECONDS - elapsed).clamp(1.0, ANSWER_SECONDS).ceil() as usize;
+        let seconds = (answer_seconds - elapsed).clamp(1.0, answer_seconds).ceil() as usize;
         let Some(name) = assets::frame_of(assets::TIMER_DIGIT, seconds) else {
             return;
         };
@@ -554,11 +552,19 @@ impl GameScreen {
     }
 
     /// The digits the device shows: the position the player picked in each round.
+    ///
+    /// Chaos mode writes the answers with the second digit set, so they stand out
+    /// from the ones a normal game leaves in the readout.
     fn draw_readout(&self, ui: &Ui, textures: &mut Textures, stage: &Stage) {
+        let digits = match self.mode {
+            Mode::Normal => assets::READOUT_DIGIT,
+            Mode::Chaos => assets::TIMER_DIGIT,
+        };
+
         for (index, pick) in self.picks.iter().enumerate() {
             let Some(position) = *pick else { continue };
             // The readout's frames are the digits themselves: frame 1 is a `1`.
-            let Some(name) = assets::frame_of(assets::READOUT_DIGIT, position as usize) else {
+            let Some(name) = assets::frame_of(digits, position as usize) else {
                 continue;
             };
             let Some(digit) = textures.get(ui.ctx(), name) else {

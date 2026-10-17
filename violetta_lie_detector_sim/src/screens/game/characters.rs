@@ -23,12 +23,16 @@
 //! than as walking it. One of the four does not cross anything at all — it keeps its
 //! slot and only steps out of it into its row and back.
 //!
+//! A chaos round runs three of those passes back to back, one after the other, so
+//! the four change places three times over before an answer is asked for.
+//!
 //! The walk cycle is shared — `npcCommon.move` — and shows the character from
 //! behind, walking away, so one cycle serves every direction of travel.
 
 use egui::{Color32, CursorIcon, Id, Sense, Stroke, StrokeKind, Ui};
 
 use crate::assets::{self, Sprite, Textures};
+use crate::screens::Mode;
 
 use super::layout;
 use super::rng::Rng;
@@ -64,16 +68,24 @@ pub struct Character {
     pub offset: (f32, f32),
     /// The places it walks through this round, first to last. Outside a walk they
     /// are all the same place.
-    pub path: [Spot; LEGS],
+    pub path: [Spot; PLACES],
 }
 
 /// A place on the stage: which slot, and which row back from the front.
 pub type Spot = (usize, usize);
 
-/// How many places describe a character's walk, counting where it starts: a round
-/// moves it along five legs — straight back into its row, three across that row,
-/// and straight forward into its new place.
+/// How many places describe one pass of a character's walk, counting where it
+/// starts: a pass moves it along five legs — straight back into its row, three
+/// across that row, and straight forward into its new place.
 pub const LEGS: usize = 6;
+
+/// How many passes a round can shuffle for: one in a normal game, three in chaos
+/// mode.
+pub const MAX_PASSES: usize = 3;
+
+/// How many places a path can hold. Each pass after the first starts in the place
+/// the one before it ended, so the passes add [`LEGS`] - 1 places each.
+pub const PLACES: usize = LEGS + (MAX_PASSES - 1) * (LEGS - 1);
 
 /// How far to either side of the centre of its slot a character may be placed, and how
 /// far above or below it, in window pixels.
@@ -98,7 +110,7 @@ const HOVER_WIDTH: f32 = 2.0;
 impl Character {
     /// The place the character stands in when it is not walking.
     pub fn spot(&self) -> Spot {
-        self.path[LEGS - 1]
+        self.path[PLACES - 1]
     }
 
     /// Where and how big it is drawn when it is not walking.
@@ -168,7 +180,7 @@ pub fn spawn(rng: &mut Rng) -> [Character; layout::ANSWER_COUNT] {
         Character {
             special: false,
             offset: placement(rng),
-            path: [spot; LEGS],
+            path: [spot; PLACES],
         }
     });
     characters[rng.below(layout::ANSWER_COUNT)].special = true;
@@ -191,33 +203,79 @@ fn placement(rng: &mut Rng) -> (f32, f32) {
 /// never both, so the walk is a set of sideways and forward steps rather than a
 /// diagonal slide.
 ///
-/// One of the four — a different one each round — keeps the place it is standing in
+/// One of the four — a different one each pass — keeps the place it is standing in
 /// and walks no further than its row: it steps out of its slot into that row and back
 /// into it, crossing nothing. The other three swap among the places that are left, so
 /// it is the one character the player can follow without taking their eyes off the
 /// rest.
-pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng) {
+///
+/// A chaos round runs three passes, one after the other, so the four change places
+/// three times before the player is asked to answer.
+pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng, mode: Mode) {
+    // Where each of the four stands as the round goes on: a pass starts where the one
+    // before it left them.
+    let mut current: [Spot; layout::ANSWER_COUNT] =
+        std::array::from_fn(|index| characters[index].spot());
+
+    // Every character's places, collected over all the passes of the round.
+    let mut paths: [[Spot; PLACES]; layout::ANSWER_COUNT] =
+        std::array::from_fn(|index| [current[index]; PLACES]);
+
+    // How many places have been written so far, which is where the next pass goes.
+    let mut filled = 0;
+
+    for pass in 0..mode.shuffle_passes() {
+        let steps = shuffle_pass(&current, rng);
+        // From the second pass on, its first place is where the previous one ended.
+        let first_leg = if pass == 0 { 0 } else { 1 };
+
+        for index in 0..layout::ANSWER_COUNT {
+            for leg in first_leg..LEGS {
+                paths[index][filled + leg - first_leg] = steps[index][leg];
+            }
+        }
+
+        filled += LEGS - first_leg;
+        current = std::array::from_fn(|index| steps[index][LEGS - 1]);
+    }
+
+    // A normal round fills only part of the path; the rest repeats the place it ends
+    // at, and `walked` does not spend time on a leg that goes nowhere.
+    for (index, character) in characters.iter_mut().enumerate() {
+        for place in &mut paths[index][filled..] {
+            *place = current[index];
+        }
+        character.path = paths[index];
+    }
+}
+
+/// One pass of a round, from the places the four stand in to the places they end the
+/// pass in.
+fn shuffle_pass(
+    current: &[Spot; layout::ANSWER_COUNT],
+    rng: &mut Rng,
+) -> [[Spot; LEGS]; layout::ANSWER_COUNT] {
     // The one that keeps its place, and the three that carry on without it.
     let standing = rng.below(layout::ANSWER_COUNT);
     let moving: [usize; layout::ANSWER_COUNT - 1] =
         std::array::from_fn(|index| if index < standing { index } else { index + 1 });
 
     let mut slots: [usize; layout::ANSWER_COUNT - 1] =
-        std::array::from_fn(|index| characters[moving[index]].spot().0);
+        std::array::from_fn(|index| current[moving[index]].0);
     rng.shuffle(&mut slots);
 
-    // Every one of the three has to end up somewhere else, or a round would have two
+    // Every one of the three has to end up somewhere else, or a pass would have two
     // characters that stayed where they were. A shuffle that leaves any of them its
     // own place is replaced by one of the two ways of cycling all three.
-    let swapped = (0..slots.len()).all(|index| slots[index] != characters[moving[index]].spot().0);
+    let swapped = (0..slots.len()).all(|index| slots[index] != current[moving[index]].0);
     if !swapped {
         let cycle = [[1, 2, 0], [2, 0, 1]][rng.below(2)];
-        slots = cycle.map(|index| characters[moving[index]].spot().0);
+        slots = cycle.map(|index| current[moving[index]].0);
     }
 
     // Where each character ends up, the one that keeps its place among them.
     let mut destinations: [usize; layout::ANSWER_COUNT] =
-        std::array::from_fn(|index| characters[index].spot().0);
+        std::array::from_fn(|index| current[index].0);
     for (index, character) in moving.iter().enumerate() {
         destinations[*character] = slots[index];
     }
@@ -225,8 +283,8 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
     let mut rows = layout::WALK_ROWS;
     rng.shuffle(&mut rows);
 
-    for (index, character) in characters.iter_mut().enumerate() {
-        let start = character.spot();
+    std::array::from_fn(|index| {
+        let start = current[index];
         let destination = (destinations[index], layout::STAND_ROW);
         // Into its own row for the walk — one of the four crosses the front of the
         // stage there, a quarter larger than they stand, while the others step upstage
@@ -236,7 +294,7 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
         let row = rows[index];
         let away = (start.0, row);
 
-        character.path = if index == standing {
+        if index == standing {
             // Nothing to cross: it steps out of its slot into its row and back into
             // it. The places it is already at are repeated because every path has the
             // same shape; `walked` does not spend time on a leg that goes nowhere.
@@ -252,8 +310,8 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
                 (destination.0, row),
                 destination,
             ]
-        };
-    }
+        }
+    })
 }
 
 /// A place for a character to walk through: its own row, in a slot outside
@@ -380,7 +438,7 @@ pub fn draw(
 /// its slot and back over the whole walk instead.
 fn walked(character: &Character, progress: f32) -> Stance {
     // The legs that go somewhere, in the order they are walked.
-    let mut steps: [(Spot, Spot); LEGS - 1] = [((0, 0), (0, 0)); LEGS - 1];
+    let mut steps: [(Spot, Spot); PLACES - 1] = [((0, 0), (0, 0)); PLACES - 1];
     let mut count = 0;
 
     for leg in character.path.windows(2) {
@@ -466,7 +524,7 @@ mod tests {
         let mut characters = spawn(&mut rng);
 
         for round in 0..64 {
-            shuffle(&mut characters, &mut rng);
+            shuffle(&mut characters, &mut rng, Mode::Normal);
 
             for character in characters {
                 let mut steps = 0;
@@ -489,6 +547,36 @@ mod tests {
         }
     }
 
+    /// Chaos mode runs three passes of the shuffle back to back, so each character
+    /// changes places three times over — and every pass still takes the four out of
+    /// their slots and back along one axis at a time.
+    #[test]
+    fn chaos_mode_shuffles_three_times_over() {
+        // The path array is sized for the most passes a round can run.
+        assert_eq!(Mode::Chaos.shuffle_passes(), MAX_PASSES);
+
+        let mut rng = Rng::new(rng::seed(5.0));
+        let mut characters = spawn(&mut rng);
+        shuffle(&mut characters, &mut rng, Mode::Chaos);
+
+        let mut total = 0;
+        for character in characters {
+            assert_eq!(character.spot().1, layout::STAND_ROW);
+
+            let mut steps = 0;
+            for leg in character.path.windows(2) {
+                assert!(leg[0].0 == leg[1].0 || leg[0].1 == leg[1].1);
+                steps += usize::from(leg[0] != leg[1]);
+            }
+            // Five legs a pass for the three that move, two for the one that keeps
+            // its place: a character that kept it every pass takes six.
+            assert!(matches!(steps, 6..=15), "a chaos round takes {steps} steps");
+            total += steps;
+        }
+        // Three passes of three movers and one stayer.
+        assert_eq!(total, 3 * (3 * 5 + 2));
+    }
+
     /// One character a round keeps the place it is standing in: it walks no further
     /// than its row, so it crosses no slots, while the other three swap among the
     /// places that are left. Which of the four it is changes from round to round.
@@ -503,7 +591,7 @@ mod tests {
                 .iter()
                 .map(|character| character.spot().0)
                 .collect();
-            shuffle(&mut characters, &mut rng);
+            shuffle(&mut characters, &mut rng, Mode::Normal);
 
             // The four still stand one to a slot…
             let mut after: Vec<usize> = characters
@@ -552,7 +640,7 @@ mod tests {
         let mut characters = spawn(&mut rng);
 
         for _ in 0..64 {
-            shuffle(&mut characters, &mut rng);
+            shuffle(&mut characters, &mut rng, Mode::Normal);
 
             let mut rows: Vec<usize> = characters
                 .iter()
@@ -574,7 +662,7 @@ mod tests {
         let mut characters = spawn(&mut rng);
 
         for _ in 0..64 {
-            shuffle(&mut characters, &mut rng);
+            shuffle(&mut characters, &mut rng, Mode::Normal);
 
             let front = characters
                 .iter()
