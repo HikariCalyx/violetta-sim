@@ -1,6 +1,7 @@
 import { REGISTRY_NAME, newSessionId, userIndexName, type Env, type RegisteredChat } from './env';
-import type { SessionState, VerificationSession } from './session';
+import { attemptLimit, type SessionState, type VerificationSession } from './session';
 import type {
+  CapturedMessage,
   TgChat,
   TgChatMember,
   TgChatMemberUpdated,
@@ -8,7 +9,7 @@ import type {
   TgUpdate,
   TgUser,
 } from './telegram';
-import { MAX_ATTEMPTS, MUTE_SECONDS, callTelegram, displayName, mmss, tryCallTelegram } from './telegram';
+import { CHAOS_MUTE_SECONDS, callTelegram, displayName, mmss, tryCallTelegram } from './telegram';
 import type { ChatRegistry } from './registry';
 import type { UserIndex } from './user-index';
 
@@ -97,30 +98,61 @@ async function botRights(env: Env, chatId: number): Promise<boolean> {
   }
 }
 
-export async function onMemberJoined(env: Env, chat: TgChat, user: TgUser): Promise<void> {
-  if (user.is_bot) return;
-
-  const registered = await gatedChat(env, chat);
-  if (!registered) return;
+/**
+ * Mutes a member who has just joined, and reports whether this chat is one the bot
+ * gates. The marker for the message window is written before the gating check, so the
+ * caller can use the same moment to decide whether to clear the arrival notice.
+ */
+export async function onMemberJoined(env: Env, chat: TgChat, user: TgUser): Promise<boolean> {
+  if (user.is_bot) return false;
 
   const index = indexStub(env, user.id);
+  // Marked before the gating check, and therefore before any network round trip: update
+  // processing is concurrent, so a message the member sends in this window may be
+  // handled before the session they belong to has even been written.
+  await index.noteJoin(chat.id);
+
+  const registered = await gatedChat(env, chat);
+  if (!registered) {
+    // Not a chat this bot gates, so nothing may be captured there either.
+    await index.discardJoin(chat.id);
+    return false;
+  }
+
   const userName = displayName(user);
   const title = registered.title || chat.title || 'the group';
+  // More than three joins in 35 minutes is a burst, not a new member on their way in.
+  const burst = await index.recordJoin(chat.id);
 
-  // Two attempts: the session handed back by `begin` can close between `begin` and
-  // `ensure` (its alarm firing is exactly that race). Starting a new one keeps a member
-  // from being left with no session at all — i.e. muted forever with nothing to finish.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const candidate = newSessionId();
-    const sessionId = await index.begin(candidate, Date.now() + (MUTE_SECONDS + 60) * 1000);
-    const state = await sessionStub(env, sessionId).ensure(user.id, userName, chat.id, title);
-    if (state.status === 'open') {
-      await index.extend(sessionId, furthestDeadline(state));
-      return;
+  try {
+    // Two attempts: the session handed back by `begin` can close between `begin` and
+    // `ensure` (its alarm firing is exactly that race). Starting a new one keeps a member
+    // from being left with no session at all — i.e. muted forever with nothing to finish.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const candidate = newSessionId();
+      // The index only needs an upper bound until `ensure` reports the real deadline, so
+      // the longer chaos window is the safe one here.
+      const sessionId = await index.begin(candidate, Date.now() + (CHAOS_MUTE_SECONDS + 60) * 1000);
+      const state = await sessionStub(env, sessionId).ensure(
+        user.id,
+        userName,
+        chat.id,
+        title,
+        burst,
+      );
+      if (state.status === 'open') {
+        await index.extend(sessionId, furthestDeadline(state));
+        return true;
+      }
+      await index.finish(sessionId);
     }
-    await index.finish(sessionId);
+    console.error('could not open a verification session', { chatId: chat.id, userId: user.id });
+    return false;
+  } finally {
+    // Past `ensure` the session itself recognises the member, whether or not the mute
+    // call succeeded, so the marker has done its job.
+    await index.clearJoin(chat.id);
   }
-  console.error('could not open a verification session', { chatId: chat.id, userId: user.id });
 }
 
 async function onMemberLeft(env: Env, chatId: number, userId: number): Promise<void> {
@@ -130,27 +162,77 @@ async function onMemberLeft(env: Env, chatId: number, userId: number): Promise<v
 }
 
 /**
+ * The context recorded for a message the bot had to remove: small enough to keep, and
+ * enough to recognise what it was. The text is truncated — this is a note, not an
+ * archive of the chat.
+ */
+function capturedMessage(msg: TgMessage, kind: CapturedMessage['kind']): CapturedMessage {
+  const text = msg.text ?? msg.caption ?? '';
+  return {
+    kind,
+    chatId: msg.chat.id,
+    messageId: msg.message_id,
+    date: msg.date,
+    text: text ? text.slice(0, 1000) : undefined,
+    bot: msg.via_bot?.username ?? (msg.guest_bot_caller_user ? msg.from?.username : undefined),
+  };
+}
+
+/**
+ * Records a message the member should not have been able to leave in the chat, then
+ * deletes it.
+ *
+ * Recorded first: a failed delete (no rights, another bot's message) must not lose the
+ * fact that the member posted before the mute landed. Until the session exists, the
+ * capture waits in the user's index and `ensure` adopts it.
+ */
+async function captureAndDelete(
+  env: Env,
+  userId: number,
+  msg: TgMessage,
+  kind: CapturedMessage['kind'],
+): Promise<void> {
+  const message = capturedMessage(msg, kind);
+  const active = await indexStub(env, userId).active();
+  const stored = active ? await sessionStub(env, active.sessionId).noteSuspicious(message) : false;
+  if (!stored) await indexStub(env, userId).capture(msg.chat.id, message);
+
+  console.info('captured a message from a member under verification', {
+    chatId: msg.chat.id,
+    userId,
+    messageId: msg.message_id,
+    kind,
+  });
+
+  await tryCallTelegram(env, 'deleteMessage', {
+    chat_id: msg.chat.id,
+    message_id: msg.message_id,
+  });
+}
+
+/**
  * Handles one message in a group: the arrival notice, and anything a still-muted member
  * managed to send.
  *
  * Both need the bot to be able to SEE the message, and to delete it. Telegram withholds
  * ordinary group messages from a bot that is in privacy mode, so that mode is turned off
- * (see the README), and deleting needs the bot's `can_delete_messages` right.
+ * (see the README), and deleting needs the bot's `can_delete_messages` right. A guest
+ * bot's answer is a message from another bot, which needs Bot-to-Bot Communication Mode.
  */
 async function onGroupMessage(env: Env, msg: TgMessage): Promise<void> {
-  const from = msg.from;
-  // Only a member with a live verification can be muted, and that is almost nobody — so
-  // this single lookup is the whole cost of the bot for an ordinary message.
-  const muted = from !== undefined && !from.is_bot && (await isMuted(env, msg.chat.id, from.id));
-
   if (msg.new_chat_members?.length) {
-    if (!(await gatedChat(env, msg.chat))) return;
     // Fallback for chats that do not deliver `chat_member` updates. `ensure` is
     // idempotent, so both paths firing for one join cannot double-mute or double-post.
-    for (const member of msg.new_chat_members) await onMemberJoined(env, msg.chat, member);
+    // The join marker is written inside each call, before it checks the gating rights.
+    let gated = false;
+    for (const member of msg.new_chat_members) {
+      gated = (await onMemberJoined(env, msg.chat, member)) || gated;
+    }
+    if (!gated) return;
     // "X joined the group": the trail of who arrived (and later, who was removed) is not
     // something the group needs to keep, and it is the first thing to clear for the
-    // member who has just arrived.
+    // member who has just arrived. This is not a message the member sent, so nothing is
+    // captured for it.
     await tryCallTelegram(env, 'deleteMessage', {
       chat_id: msg.chat.id,
       message_id: msg.message_id,
@@ -158,15 +240,35 @@ async function onGroupMessage(env: Env, msg: TgMessage): Promise<void> {
     return;
   }
 
-  if (muted) {
-    // Only reachable between joining and the mute landing: once the restriction is on,
-    // the member cannot send anything for this to delete. Deliberately uncached — a cache
-    // would keep deleting the messages of somebody who has just passed.
-    await tryCallTelegram(env, 'deleteMessage', {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id,
-    });
+  // A guest bot answers in the chat on behalf of the member who summoned it: `from` is
+  // the bot, but `guest_bot_caller_user` is the member. A muted member can still get a
+  // message in this way, so a member under verification has these deleted too, and the
+  // capture is what puts their challenge into chaos mode.
+  const guestCaller = msg.guest_bot_caller_user;
+  if (guestCaller && !guestCaller.is_bot) {
+    const index = indexStub(env, guestCaller.id);
+    const active = await index.active();
+    const mutedHere = active ? await sessionStub(env, active.sessionId).mutedIn(msg.chat.id) : false;
+    // ...or the mute has not been written yet, in which case the join marker stands in.
+    const beforeMute = !mutedHere && (await index.joinedRecently(msg.chat.id));
+    if (mutedHere || beforeMute) {
+      await captureAndDelete(env, guestCaller.id, msg, 'guest-bot');
+    }
+    return;
   }
+
+  const from = msg.from;
+  if (!from || from.is_bot) return;
+
+  // Only a member with a live verification can be muted, and that is almost nobody — so
+  // this single lookup is the whole cost of the bot for an ordinary message. Anything
+  // they manage to send before the restriction lands is captured and deleted; the join
+  // marker covers the moment before the session itself exists.
+  const muted = await isMuted(env, msg.chat.id, from.id);
+  const beforeMute = muted || (await indexStub(env, from.id).joinedRecently(msg.chat.id));
+  if (!beforeMute) return;
+
+  await captureAndDelete(env, from.id, msg, 'before-mute');
 }
 
 /** Whether `userId` is currently muted in `chatId` by a live verification. */
@@ -254,9 +356,10 @@ async function onPrivateStart(env: Env, user: TgUser, chatId: number): Promise<v
 
   // The earliest deadline, because that is the one that actually removes them.
   const deadline = Math.min(...restricted.map((chat) => chat.deadline));
-  const attempt = Math.min(state.attempts + 1, MAX_ATTEMPTS);
+  const limit = attemptLimit(state);
+  const attempt = Math.min(state.attempts + 1, limit);
   await reply(
-    `Verify here — ${mmss(deadline - Date.now())} left, attempt ${attempt} of ${MAX_ATTEMPTS}:\n` +
+    `Verify here — ${mmss(deadline - Date.now())} left, attempt ${attempt} of ${limit}:\n` +
       `${env.VERIFY_ORIGIN}/telegram?session=${state.sessionId}`,
   );
 }
@@ -281,14 +384,8 @@ export async function dispatch(env: Env, update: TgUpdate): Promise<void> {
       return;
     }
 
-    // The service message that announces an arrival is also the only update carrying the
-    // id needed to delete it, so it is handled before the general group path.
-    if (msg.new_chat_members?.length) {
-      await onGroupMessage(env, msg);
-      return;
-    }
-
-    if (!msg.from || msg.from.is_bot) return;
+    // The group path sorts out the arrival notice, messages bots post (a guest bot's
+    // answer is one) and ordinary members alike, so it sees every group update.
     await onGroupMessage(env, msg);
   } catch (err) {
     console.error('update failed', update.update_id, err instanceof Error ? err.message : err);

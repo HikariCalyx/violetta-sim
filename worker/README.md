@@ -4,14 +4,24 @@ A Cloudflare Worker that gates the members of a Telegram group behind the mini-g
 this repository. (`violetta` is the Worker's name in `wrangler.jsonc`, which is also what
 the Cloudflare dashboard lists and what an API token scoped to one Worker would use.)
 
-A new member is muted, given 10 minutes in total, and can only talk after finishing the
-game in the bot's PM. Running out of time, or failing all three attempts, removes them
-from the chat — they may rejoin and try again. The removal lifts the mute as well as the
+A new member is muted and can only talk after finishing the game in the bot's PM. A normal
+verification allows 10 minutes in total and three attempts; running out of time, or failing
+them all, removes the member from the chat — and the removal lifts the mute as well as the
 ban, so nothing is left behind that would keep them quiet or list them as restricted.
 
 The arrival notice greets them by name with a **Start** button into the bot, and the
-announcement that they joined — along with anything they manage to send before the mute
-lands — is deleted again.
+announcement that they joined is deleted again. Anything the member manages to send in
+the moment before the mute lands is recorded and deleted too, and so is any answer a
+guest bot posts on their behalf while they are muted — a muted member can still get a
+message in by summoning one. A member caught this way plays the mini-game in **chaos
+mode**, as does anyone who joins the same chat more than three times within 35 minutes.
+
+Chaos mode shuffles for 7 seconds instead of 5, moves the four through three shuffle
+passes instead of one, doubles the watermark figures and raises them to 90, cuts the
+answer window to 3 seconds, and writes the answers with the second digit set. It also
+gives **15 minutes and ten attempts** instead of 10 and three, and a member who fails it
+**stays banned** — they remain in the chat's *Removed users* list instead of being
+unbanned to try again.
 
 **No chat has to be enrolled.** The bot gates every chat where it is an administrator with
 **Ban users** and **Delete messages** — being promoted is the whole opt-in. The first join
@@ -44,7 +54,9 @@ attempt counter is shared — one game, three tries.
 
 1. Create the bot with @BotFather and copy its token. Also send it `/setprivacy` →
    **Disable**: Telegram withholds ordinary group messages from a bot that is in privacy
-   mode, and the bot cannot delete what it never sees.
+   mode, and the bot cannot delete what it never sees. In the @BotFather Mini App, also
+   enable **Bot-to-Bot Communication Mode**, which is what lets the bot see (and delete)
+   the answers a guest bot posts on a member's behalf.
 2. `cd worker && npm install`
 3. Register the secrets (they must never land in `wrangler.jsonc`). **The GitHub Actions
    workflow does this for you** — see below — so this is only for a hand deploy:
@@ -110,7 +122,7 @@ The workflow and the Pages one both build the bundle, with different base paths 
 | --- | --- |
 | `POST /telegram/webhook` | Telegram only. Requires the `X-Telegram-Bot-Api-Secret-Token` header; answers `ok` before doing the work |
 | `GET /telegram?session=<uuid>` | The game page (the same bundle as `/`) |
-| `GET /api/session/<uuid>/state` | `status`, `deadline`, `attemptsLeft`, the shuffle, and `serverNow` |
+| `GET /api/session/<uuid>/state` | `status`, `deadline`, `attemptsLeft`, the shuffle, `serverNow`, and `chaos` (the member was caught posting) |
 | `POST /api/session/<uuid>/pick` | `{ roundIndex, slot, elapsedMs }` — the only write the browser makes. A `slot` of 0 means "ran out of time": it scores as a miss instead of leaving the attempt open |
 | `GET /api/health` | Liveness |
 
@@ -133,6 +145,16 @@ removed" instead of breaking. Only an unknown session id is a 404.
   group messages from a bot in privacy mode, so with privacy on the bot still mutes and
   posts its notice but cannot clear anything sent in the moment before the mute landed.
   `/setprivacy` → Disable is what fixes that. Deleting needs `can_delete_messages` too.
+- **Capturing the pre-mute window is a best-effort race.** Telegram processes webhook
+  updates concurrently, so the join handler marks the member in their `UserIndex` before
+  it does any network call; a message update that overtakes even that marker cannot be
+  attributed to the join. Guest-bot answers are only visible with **Bot-to-Bot
+  Communication Mode** enabled, so without it they are neither seen nor deleted.
+- **Chaos mode is decided from what was captured or how often they joined.** A message
+  captured before the mute, a guest bot's answer while the member is muted, or more than
+  three joins of the same chat within 35 minutes turns it on; a member who stays quiet
+  starts at the normal setting. A chaos failure deliberately keeps the ban, so the member
+  stays in the chat's *Removed users* list and cannot rejoin.
 - **Someone who is already in the chat is not affected.** Gating happens on a join, so a
   member who joined while the bot was misconfigured stays unmuted until they rejoin.
 - **Making the Worker authoritative on timing** (rejecting suspiciously fast clicks) is

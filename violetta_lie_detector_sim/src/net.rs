@@ -44,6 +44,10 @@ pub struct Snapshot {
     /// Which character wears the make-up, by index.
     pub special: u8,
     pub round_index: u32,
+    /// Whether the Worker caught the member posting before the mute landed (or through
+    /// a guest bot afterwards), which makes the challenge start in chaos mode.
+    #[serde(default)]
+    pub chaos: bool,
 }
 
 /// What the Worker answered after a pick.
@@ -76,6 +80,8 @@ pub struct PickReport {
 pub struct Plan {
     pub orders: Vec<Vec<usize>>,
     pub special: usize,
+    /// Play the game in chaos mode, because the Worker flagged this member.
+    pub chaos: bool,
 }
 
 /// Everything the fetch tasks write back, behind one lock.
@@ -226,7 +232,11 @@ impl Verification {
             orders.push(slots);
         }
 
-        Some(Plan { orders, special })
+        Some(Plan {
+            orders,
+            special,
+            chaos: snapshot.chaos,
+        })
     }
 
     /// Tells the Worker which position was picked. `slot` is one-based, or zero when

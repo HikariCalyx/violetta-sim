@@ -5,11 +5,17 @@ const API = 'https://api.telegram.org';
 /** How long a new member has, in total, to finish the mini-game. */
 export const MUTE_SECONDS = 10 * 60;
 
+/** Chaos mode is longer: the member has already been caught trying to talk. */
+export const CHAOS_MUTE_SECONDS = 15 * 60;
+
 /**
  * One shared counter per user, not per chat: "finish once" means one game and three
  * tries in total, so joining a second protected chat mid-game does not refill it.
  */
 export const MAX_ATTEMPTS = 3;
+
+/** Chaos mode is harder, so it gives proportionally more tries. */
+export const CHAOS_MAX_ATTEMPTS = 10;
 
 /**
  * Every send flag false. In a supergroup `can_send_messages: false` already covers the
@@ -91,8 +97,35 @@ export interface TgMessage {
   chat: TgChat;
   date: number;
   text?: string;
+  caption?: string;
   message_thread_id?: number;
   new_chat_members?: TgUser[];
+  /** The bot a message was sent through, when it was sent with an inline bot. */
+  via_bot?: TgUser;
+  /**
+   * For a message posted by a guest bot, the member whose message summoned it. The
+   * bot may not be muted, but the member who triggered it can be.
+   */
+  guest_bot_caller_user?: TgUser;
+}
+
+/**
+ * What the bot noted about a message it deleted from a member under verification.
+ *
+ * Deliberately small: the point is to know *that* the member posted before the mute
+ * landed, and enough context to recognise the message, not to archive the chat.
+ */
+export interface CapturedMessage {
+  /** Why it was deleted: before the mute, or through a guest bot afterwards. */
+  kind: 'before-mute' | 'guest-bot';
+  chatId: number;
+  messageId: number;
+  /** The message's own timestamp, in Unix seconds, as Telegram reported it. */
+  date: number;
+  /** The text or caption, truncated. */
+  text?: string;
+  /** The bot that posted it or carried it, by username, when there was one. */
+  bot?: string;
 }
 
 export interface TgUpdate {

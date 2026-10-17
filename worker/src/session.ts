@@ -2,6 +2,8 @@ import { DurableObject } from 'cloudflare:workers';
 import { userIndexName, type Env } from './env';
 import { ROUNDS_PER_ATTEMPT, answerSlot, makeRounds, type RoundSet } from './rounds';
 import {
+  CHAOS_MAX_ATTEMPTS,
+  CHAOS_MUTE_SECONDS,
   FULL_PERMISSIONS,
   MAX_ATTEMPTS,
   MUTED_PERMISSIONS,
@@ -10,8 +12,20 @@ import {
   escapeHtml,
   mention,
   tryCallTelegram,
+  type CapturedMessage,
   type TgChatMember,
 } from './telegram';
+
+/**
+ * How many attempts a session gets. Chaos mode is both harder and longer, and gives
+ * the member proportionally more tries.
+ */
+export const attemptLimit = (s: Pick<SessionState, 'chaos'>): number =>
+  s.chaos ? CHAOS_MAX_ATTEMPTS : MAX_ATTEMPTS;
+
+/** How long the member has in a chat, from the join. */
+const muteSecondsFor = (s: Pick<SessionState, 'chaos'>): number =>
+  s.chaos ? CHAOS_MUTE_SECONDS : MUTE_SECONDS;
 
 export type ChatEntryState =
   /** Muted and waiting; the alarm will kick this member. */
@@ -26,8 +40,10 @@ export type ChatEntryState =
 export interface ChatEntry {
   chatId: number;
   title: string;
-  /** Unix ms, per chat: joining a second protected chat buys that chat its own 10 minutes. */
+  /** Unix ms, per chat: joining a second protected chat buys that chat its own window. */
   deadline: number;
+  /** When this chat's verification started, which is what a chaos deadline grows from. */
+  joinedAt?: number;
   /** Our own notice in that chat, deleted when the entry stops being `restricted`. */
   noticeId: number | null;
   state: ChatEntryState;
@@ -54,9 +70,23 @@ export interface SessionState {
   /** Round the page is on; resets to 0 for a retry. */
   roundIndex: number;
   picks: PickRecord[];
+  /**
+   * Played in chaos mode: the member posted before the mute landed, summoned a guest
+   * bot while muted, or has joined this chat more than three times in 35 minutes.
+   */
+  chaos: boolean;
+  /**
+   * What the member posted before the mute landed, and any guest bot's answers they
+   * summoned afterwards. These are the context for an administrator; `chaos` is the
+   * part the game acts on.
+   */
+  suspicious: CapturedMessage[];
   createdAt: number;
   closedAt: number | null;
 }
+
+/** How many captured messages are kept. The flag only needs the first one. */
+const MAX_CAPTURED = 32;
 
 const KEY = 'state';
 
@@ -82,6 +112,11 @@ export interface SessionSnapshot {
   rounds: number[][];
   special: number;
   roundIndex: number;
+  /**
+   * The challenge is played in chaos mode: the member posted before the mute landed,
+   * summoned a guest bot while muted, or kept rejoining this chat.
+   */
+  chaos: boolean;
 }
 
 /** What `pick` reports back. A closed session is not an error the page should retry. */
@@ -140,8 +175,9 @@ export class VerificationSession extends DurableObject<Env> {
     userName: string,
     chatId: number,
     title: string,
+    burst: boolean,
   ): Promise<SessionState> {
-    return this.serialize(() => this.ensureLocked(userId, userName, chatId, title));
+    return this.serialize(() => this.ensureLocked(userId, userName, chatId, title, burst));
   }
 
   async pick(roundIndex: number, slot: number, elapsedMs: number): Promise<PickResult> {
@@ -157,8 +193,87 @@ export class VerificationSession extends DurableObject<Env> {
     return this.serialize(() => this.alarmLocked());
   }
 
+  /**
+   * A message the member sent before the mute landed, or a guest bot's answer after it.
+   *
+   * Returns whether it was recorded. `false` means the session does not exist yet, so
+   * the caller keeps it in the user's index until `ensure` adopts it.
+   */
+  async noteSuspicious(message: CapturedMessage): Promise<boolean> {
+    return this.serialize(() => this.noteSuspiciousLocked(message));
+  }
+
   async read(): Promise<SessionState | null> {
-    return (await this.ctx.storage.get<SessionState>(KEY)) ?? null;
+    const s = await this.ctx.storage.get<SessionState>(KEY);
+    // A session written before chaos mode existed has neither field.
+    if (s && !Array.isArray(s.suspicious)) s.suspicious = [];
+    if (s && typeof s.chaos !== 'boolean') s.chaos = s.suspicious.length > 0;
+    return s ?? null;
+  }
+
+  /**
+   * Turns chaos mode on and stretches every still-open chat to its longer window.
+   * Returns whether anything changed.
+   */
+  private markChaos(s: SessionState): boolean {
+    let changed = false;
+    if (!s.chaos) {
+      s.chaos = true;
+      changed = true;
+    }
+
+    for (const entry of Object.values(s.chats)) {
+      if (entry.state !== 'restricted') continue;
+      // Older entries predate `joinedAt`; their normal deadline still tells us when the
+      // chat's window started.
+      const joinedAt = entry.joinedAt ?? entry.deadline - MUTE_SECONDS * 1000;
+      entry.joinedAt = joinedAt;
+      const deadline = joinedAt + CHAOS_MUTE_SECONDS * 1000;
+      if (deadline > entry.deadline) {
+        entry.deadline = deadline;
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  /** Moves anything captured in the user's index into this session's own state. */
+  private async adoptCaptured(s: SessionState): Promise<boolean> {
+    const index = this.env.USER_INDEX.get(this.env.USER_INDEX.idFromName(userIndexName(s.userId)));
+    let added = false;
+    for (const message of await index.takeCaptured()) {
+      added = this.remember(s, message) || added;
+    }
+    return added;
+  }
+
+  /** Keeps `message` once, up to the cap. Returns whether it was a new record. */
+  private remember(s: SessionState, message: CapturedMessage): boolean {
+    if (s.suspicious.length >= MAX_CAPTURED) return false;
+    const duplicate = s.suspicious.some(
+      (known) =>
+        known.chatId === message.chatId &&
+        known.messageId === message.messageId &&
+        known.kind === message.kind,
+    );
+    if (duplicate) return false;
+    s.suspicious.push(message);
+    return true;
+  }
+
+  private async noteSuspiciousLocked(message: CapturedMessage): Promise<boolean> {
+    const s = await this.read();
+    // Not written yet: the caller keeps it in the index, and `ensure` adopts it.
+    if (!s) return false;
+    if (s.status === 'open') {
+      const remembered = this.remember(s, message);
+      if (this.markChaos(s) || remembered) {
+        await this.save(s);
+        await this.arm(s);
+      }
+    }
+    return true;
   }
 
   private async ensureLocked(
@@ -166,6 +281,7 @@ export class VerificationSession extends DurableObject<Env> {
     userName: string,
     chatId: number,
     title: string,
+    burst: boolean,
   ): Promise<SessionState> {
     let s = await this.read();
     if (!s) {
@@ -179,6 +295,8 @@ export class VerificationSession extends DurableObject<Env> {
         set: makeRounds(),
         roundIndex: 0,
         picks: [],
+        chaos: false,
+        suspicious: [],
         createdAt: Date.now(),
         closedAt: null,
       };
@@ -186,14 +304,27 @@ export class VerificationSession extends DurableObject<Env> {
     // A closed session is the join handler's cue to start a new one.
     if (s.status !== 'open') return s;
 
+    // A message captured while this session was still being created belongs to it, and
+    // so does a member who has been joining over and over. Either one makes the
+    // challenge chaotic, which changes the window the new chat is given below.
+    let changed = await this.adoptCaptured(s);
+    if (changed) changed = this.markChaos(s) || changed;
+    if (burst) changed = this.markChaos(s) || changed;
+    if (changed) {
+      await this.save(s);
+      await this.arm(s);
+    }
+
     const key = String(chatId);
     const existing = s.chats[key];
     if (existing && (existing.state === 'restricted' || existing.state === 'passed')) return s;
 
+    const joinedAt = Date.now();
     const entry: ChatEntry = {
       chatId,
       title,
-      deadline: Date.now() + MUTE_SECONDS * 1000,
+      deadline: joinedAt + muteSecondsFor(s) * 1000,
+      joinedAt,
       noticeId: null,
       state: 'restricted',
     };
@@ -228,8 +359,21 @@ export class VerificationSession extends DurableObject<Env> {
 
   /** The public view the game page reads. No secrets — the shuffle is visible on screen anyway. */
   async snapshot(): Promise<SessionSnapshot | null> {
+    // Serialised because it adopts captured messages, which writes: a snapshot that
+    // saved while `pick` was preparing its own save could lose the pick.
+    return this.serialize(() => this.snapshotLocked());
+  }
+
+  private async snapshotLocked(): Promise<SessionSnapshot | null> {
     const s = await this.read();
     if (!s) return null;
+    // A message can land in the index after `ensure` looked; adopt it before the page
+    // decides which mode to open in, and keep any later context with the session.
+    if (s.status === 'open' && (await this.adoptCaptured(s))) {
+      this.markChaos(s);
+      await this.save(s);
+      await this.arm(s);
+    }
     const restricted = Object.values(s.chats).filter((chat) => chat.state === 'restricted');
     return {
       sessionId: s.sessionId,
@@ -237,11 +381,12 @@ export class VerificationSession extends DurableObject<Env> {
       serverNow: Date.now(),
       deadline: restricted.length ? Math.min(...restricted.map((chat) => chat.deadline)) : null,
       attempts: s.attempts,
-      attemptsLeft: Math.max(0, MAX_ATTEMPTS - s.attempts),
+      attemptsLeft: Math.max(0, attemptLimit(s) - s.attempts),
       chats: Object.values(s.chats).map((chat) => ({ title: chat.title, state: chat.state })),
       rounds: s.set.rounds.map((round) => round.order),
       special: s.set.special,
       roundIndex: s.roundIndex,
+      chaos: s.chaos,
     };
   }
 
@@ -264,7 +409,7 @@ export class VerificationSession extends DurableObject<Env> {
 
     const correct = slot === answerSlot(s.set, roundIndex);
     s.picks.push({ roundIndex, slot, elapsedMs, correct });
-    const attemptsLeft = () => Math.max(0, MAX_ATTEMPTS - s.attempts);
+    const attemptsLeft = () => Math.max(0, attemptLimit(s) - s.attempts);
 
     if (correct) {
       s.roundIndex += 1;
@@ -369,9 +514,11 @@ export class VerificationSession extends DurableObject<Env> {
     await this.save(s);
     await this.ctx.storage.deleteAlarm();
     // Release the user: their next join must start a fresh verification, not resume this one.
-    await this.env.USER_INDEX.get(
-      this.env.USER_INDEX.idFromName(userIndexName(s.userId)),
-    ).finish(s.sessionId);
+    const index = this.env.USER_INDEX.get(this.env.USER_INDEX.idFromName(userIndexName(s.userId)));
+    await index.finish(s.sessionId);
+    // Captures that arrived after the last adoption must not follow the member into a
+    // later verification.
+    await index.discardCaptured();
     // Arm the reaper. The id can never be played again in the meantime: the page only serves
     // a game for `open` sessions.
     await this.ctx.storage.setAlarm(Date.now() + CLOSED_RETENTION_MS);
@@ -426,25 +573,31 @@ export class VerificationSession extends DurableObject<Env> {
       revoke_messages: false,
     });
 
-    // Deliberately NOT `only_if_banned: true`. If the ban has not registered by the moment
-    // this arrives, that flag turns the call into a no-op and leaves the member banned for
-    // good — able to rejoin nowhere, which is the opposite of what a kick is for. Unbanning
-    // somebody who is not banned does nothing at all, so the flag buys nothing either.
-    await tryCallTelegram(this.env, 'unbanChatMember', {
-      chat_id: entry.chatId,
-      user_id: s.userId,
-    });
-
-    // Read back, because a member left banned is invisible from inside the Worker: the chat
-    // simply never sees them again. A second unban is harmless, and is what clears the case
-    // above if the first one really was swallowed.
-    let status = await this.memberStatus(entry.chatId, s.userId);
-    if (status === 'kicked') {
+    // Chaos mode keeps the ban: the member stays in the chat's "Removed users" list and
+    // cannot simply rejoin. A normal ending lifts it, because a kick is meant to let them
+    // come back and try again.
+    let status: string | null = null;
+    if (!s.chaos) {
+      // Deliberately NOT `only_if_banned: true`. If the ban has not registered by the moment
+      // this arrives, that flag turns the call into a no-op and leaves the member banned for
+      // good — able to rejoin nowhere, which is the opposite of what a kick is for. Unbanning
+      // somebody who is not banned does nothing at all, so the flag buys nothing either.
       await tryCallTelegram(this.env, 'unbanChatMember', {
         chat_id: entry.chatId,
         user_id: s.userId,
       });
+
+      // Read back, because a member left banned is invisible from inside the Worker: the chat
+      // simply never sees them again. A second unban is harmless, and is what clears the case
+      // above if the first one really was swallowed.
       status = await this.memberStatus(entry.chatId, s.userId);
+      if (status === 'kicked') {
+        await tryCallTelegram(this.env, 'unbanChatMember', {
+          chat_id: entry.chatId,
+          user_id: s.userId,
+        });
+        status = await this.memberStatus(entry.chatId, s.userId);
+      }
     }
 
     await this.dropNotice(entry);
@@ -454,20 +607,24 @@ export class VerificationSession extends DurableObject<Env> {
       chatId: entry.chatId,
       userId: s.userId,
       reason,
+      chaos: s.chaos,
       attempts: s.attempts,
       secondsLeft: Math.round((entry.deadline - Date.now()) / 1000),
-      // `left` is the intended end state — out of the chat, free to rejoin. `kicked` means
-      // the unban did not take, and `member`/`restricted` means the kick itself did not.
-      statusAfter: status,
+      // `left` is the intended end state of a normal removal — out of the chat, free to
+      // rejoin. `kicked` means the unban did not take, and `member`/`restricted` means the
+      // kick itself did not. A chaos removal is meant to stay banned.
+      statusAfter: s.chaos ? 'banned' : status,
     });
 
     const why =
       reason === 'expired'
-        ? `the ${MUTE_SECONDS / 60} minutes were up`
-        : `none of the ${MAX_ATTEMPTS} tries were completed`;
+        ? `the ${muteSecondsFor(s) / 60} minutes were up`
+        : `none of the ${attemptLimit(s)} tries were completed`;
     await tryCallTelegram(this.env, 'sendMessage', {
       chat_id: s.userId,
-      text: `You were removed from “${entry.title}”: ${why}. You can rejoin and try again.`,
+      text: s.chaos
+        ? `You were removed from “${entry.title}”: ${why}. You cannot rejoin this chat.`
+        : `You were removed from “${entry.title}”: ${why}. You can rejoin and try again.`,
     });
   }
 

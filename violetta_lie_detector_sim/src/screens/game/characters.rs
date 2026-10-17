@@ -328,41 +328,89 @@ fn shuffle_pass(
 /// scored — and a character handed its own place back still walks out to its
 /// waypoints and back, so the stage never sits still.
 ///
+/// In chaos mode the extra passes a plain round runs are walked first, at the local
+/// generator's own destinations; only the last pass has to end where the Worker says.
+///
 /// `destinations[i]` is where character `i` ends up, in zero-based slots.
 pub fn shuffle_to(
     characters: &mut [Character; layout::ANSWER_COUNT],
     rng: &mut Rng,
     destinations: &[usize],
+    mode: Mode,
 ) {
+    // Where each of the four stands as the round goes on: a pass starts where the one
+    // before it left them.
+    let mut current: [Spot; layout::ANSWER_COUNT] =
+        std::array::from_fn(|index| characters[index].spot());
+
+    let mut paths: [[Spot; PLACES]; layout::ANSWER_COUNT] =
+        std::array::from_fn(|index| [current[index]; PLACES]);
+
+    // How many places have been written so far, which is where the next pass goes.
+    let mut filled = 0;
+
+    for _ in 1..mode.shuffle_passes() {
+        let steps = shuffle_pass(&current, rng);
+        let first_leg = if filled == 0 { 0 } else { 1 };
+
+        for index in 0..layout::ANSWER_COUNT {
+            for leg in first_leg..LEGS {
+                paths[index][filled + leg - first_leg] = steps[index][leg];
+            }
+        }
+
+        filled += LEGS - first_leg;
+        current = std::array::from_fn(|index| steps[index][LEGS - 1]);
+    }
+
+    // The pass that decides the round: it lands on the Worker's slots.
+    let steps = planned_pass(&current, destinations, rng);
+    let first_leg = if filled == 0 { 0 } else { 1 };
+    for index in 0..layout::ANSWER_COUNT {
+        for leg in first_leg..LEGS {
+            paths[index][filled + leg - first_leg] = steps[index][leg];
+        }
+        // The tail of a normal round repeats the place it ends at, and `walked` does
+        // not spend time on a leg that goes nowhere.
+        for place in &mut paths[index][filled + LEGS - first_leg..] {
+            *place = steps[index][LEGS - 1];
+        }
+    }
+
+    for (index, character) in characters.iter_mut().enumerate() {
+        character.path = paths[index];
+    }
+}
+
+/// One pass of a verification's walk, ending in the slots the Worker picked.
+///
+/// The same shape as a pass of [`shuffle`] — into its own row, across that row twice,
+/// and back to standing depth — so a verification is walked the way a plain game is.
+fn planned_pass(
+    current: &[Spot; layout::ANSWER_COUNT],
+    destinations: &[usize],
+    rng: &mut Rng,
+) -> [[Spot; LEGS]; layout::ANSWER_COUNT] {
     let mut rows = layout::WALK_ROWS;
     rng.shuffle(&mut rows);
 
-    for (index, character) in characters.iter_mut().enumerate() {
-        let start = character.spot();
+    std::array::from_fn(|index| {
+        let start = current[index];
         let slot = destinations.get(index).copied().unwrap_or(index) % layout::ANSWER_COUNT;
         let destination = (slot, layout::STAND_ROW);
-        // The same walk [`shuffle`] sends them on — into its own row for the walk,
-        // across that row twice, and back to standing depth in the slot the Worker
-        // picked — so a verification is walked the way a plain game is.
         let row = rows[index];
         let away = (start.0, row);
         let first = waypoint(row, &[start.0, destination.0], rng);
         let second = waypoint(row, &[first.0, destination.0], rng);
-
-        // A verification takes one pass of the walk, while the path is sized for
-        // the most passes a round can shuffle for. The rest repeats the place it
-        // ends at, and `walked` does not spend time on a leg that goes nowhere.
-        let mut path = [destination; PLACES];
-        path[..LEGS].copy_from_slice(&[
+        [
             start,
             away,
             first,
             second,
             (destination.0, row),
             destination,
-        ]);
-        character.path = path;
-    }
+        ]
+    })
 }
 
 /// Marks which character is the one to follow.
@@ -777,7 +825,7 @@ mod tests {
         for seed in 0..8 {
             let mut rng = Rng::new(rng::seed(seed as f64));
             let mut characters = spawn(&mut rng);
-            shuffle_to(&mut characters, &mut rng, &destinations);
+            shuffle_to(&mut characters, &mut rng, &destinations, Mode::Normal);
 
             for (index, character) in characters.iter().enumerate() {
                 assert_eq!(character.path.len(), PLACES);
@@ -803,6 +851,30 @@ mod tests {
             slots.dedup();
             assert_eq!(slots.len(), layout::ANSWER_COUNT);
         }
+    }
+
+    /// A verification played in chaos mode walks the extra passes a chaos round runs,
+    /// and still ends in the slots the Worker picked.
+    #[test]
+    fn a_chaos_verification_walks_the_chaos_passes() {
+        let destinations = [2, 0, 3, 1];
+        let mut rng = Rng::new(rng::seed(9.0));
+        let mut characters = spawn(&mut rng);
+        shuffle_to(&mut characters, &mut rng, &destinations, Mode::Chaos);
+
+        let mut total = 0;
+        for (index, character) in characters.iter().enumerate() {
+            assert_eq!(character.spot(), (destinations[index], layout::STAND_ROW));
+            let steps = character
+                .path
+                .windows(2)
+                .filter(|leg| leg[0] != leg[1])
+                .count();
+            assert!(steps >= 9, "a chaos verification takes {steps} steps");
+            total += steps;
+        }
+        // Two extra passes of 17 steps, plus the planned pass's 20.
+        assert_eq!(total, 54);
     }
 
     /// The depth is measured from the row the four stand at, so that is where they are

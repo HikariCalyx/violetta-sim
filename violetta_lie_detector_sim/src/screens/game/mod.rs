@@ -183,9 +183,15 @@ impl GameScreen {
         time: f64,
         plan: &Plan,
     ) {
-        // A verification is always played at the normal setting: its page opens
-        // straight into the game, so there is no title screen to choose a mode on.
-        self.begin(ctx, textures, time, Mode::Normal);
+        // A verification has no title screen to choose a setting on. It is played in
+        // chaos mode when the Worker caught the member posting before their mute landed,
+        // and normally otherwise.
+        let mode = if plan.chaos {
+            Mode::Chaos
+        } else {
+            Mode::Normal
+        };
+        self.begin(ctx, textures, time, mode);
         characters::set_special(&mut self.characters, plan.special);
         self.orders = Some(plan.orders.clone());
     }
@@ -358,7 +364,12 @@ impl GameScreen {
                 // A verification plays the shuffle the Worker scored the pick against.
                 Some(orders) => {
                     let round = self.round.min(orders.len().saturating_sub(1));
-                    characters::shuffle_to(&mut self.characters, &mut self.rng, &orders[round]);
+                    characters::shuffle_to(
+                        &mut self.characters,
+                        &mut self.rng,
+                        &orders[round],
+                        self.mode,
+                    );
                 }
                 None => characters::shuffle(&mut self.characters, &mut self.rng, self.mode),
             }
