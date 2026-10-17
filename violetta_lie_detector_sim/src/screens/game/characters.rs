@@ -25,6 +25,11 @@
 //!
 //! The walk cycle is shared — `npcCommon.move` — and shows the character from
 //! behind, walking away, so one cycle serves every direction of travel.
+//!
+//! A verification takes the same walk, except that where each of them ends up comes
+//! from the Worker — that is what it scores a pick against — rather than from the
+//! local draw: [`shuffle_to`] lays those destinations out, and [`shuffle`] draws its
+//! own.
 
 use egui::{Color32, CursorIcon, Id, Sense, Stroke, StrokeKind, Ui};
 
@@ -277,11 +282,23 @@ pub fn shuffle_to(
     for (index, character) in characters.iter_mut().enumerate() {
         let start = character.spot();
         let slot = destinations.get(index).copied().unwrap_or(index) % layout::ANSWER_COUNT;
-        let destination = (slot, layout::FRONT_ROW);
+        let destination = (slot, layout::STAND_ROW);
+        // The same walk [`shuffle`] sends them on — into its own row for the walk,
+        // across that row twice, and back to standing depth in the slot the Worker
+        // picked — so a verification is walked the way a plain game is.
         let row = rows[index];
+        let away = (start.0, row);
         let first = waypoint(row, &[start.0, destination.0], rng);
-        let second = waypoint(row, &[first.0], rng);
-        character.path = [start, first, second, destination];
+        let second = waypoint(row, &[first.0, destination.0], rng);
+
+        character.path = [
+            start,
+            away,
+            first,
+            second,
+            (destination.0, row),
+            destination,
+        ];
     }
 }
 
@@ -654,6 +671,44 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A verification walks the way a plain game does — the same shape of path, every
+    /// leg along one axis, back to standing depth — only to the slots the Worker picked
+    /// out rather than to a shuffle of its own.
+    #[test]
+    fn a_verification_walks_the_way_a_plain_game_does() {
+        let destinations = [2, 0, 3, 1];
+
+        for seed in 0..8 {
+            let mut rng = Rng::new(rng::seed(seed as f64));
+            let mut characters = spawn(&mut rng);
+            shuffle_to(&mut characters, &mut rng, &destinations);
+
+            for (index, character) in characters.iter().enumerate() {
+                assert_eq!(character.path.len(), LEGS);
+                assert_eq!(character.spot(), (destinations[index], layout::STAND_ROW));
+
+                // Padding is allowed — a character handed its own place back has legs
+                // that go nowhere — but the walk as a whole has to go somewhere.
+                assert!(character.path.windows(2).any(|leg| leg[0] != leg[1]));
+
+                for leg in character.path.windows(2) {
+                    assert!(
+                        leg[0].0 == leg[1].0 || leg[0].1 == leg[1].1,
+                        "seed {seed}: {:?} to {:?} moves obliquely",
+                        leg[0],
+                        leg[1]
+                    );
+                }
+            }
+
+            // The four still stand one to a slot.
+            let mut slots: Vec<usize> = characters.iter().map(|one| one.spot().0).collect();
+            slots.sort_unstable();
+            slots.dedup();
+            assert_eq!(slots.len(), layout::ANSWER_COUNT);
         }
     }
 
