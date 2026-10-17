@@ -17,11 +17,13 @@
 //! apart. One of those rows is the front of the stage itself, so a round always sends
 //! one of the four across it, drawn a quarter larger than the four of them stand.
 //!
-//! Every leg of that walk goes along one axis: a character steps straight back,
-//! crosses sideways in its row, and steps straight forward again. A leg that
-//! changed slot and depth at once would read as sliding across the stage rather
-//! than as walking it. One of the four does not cross anything at all — it keeps its
-//! slot and only steps out of it into its row and back.
+//! A normal round's every leg goes along one axis: a character steps straight back,
+//! crosses sideways in its row, and steps straight forward again. A chaos round is
+//! allowed to step diagonally into and out of its row, while the crossing itself still
+//! stays at the character's own depth so the four cannot share one.
+//!
+//! One of the four does not cross anything at all — it keeps its slot and only steps
+//! out of it into its row and back.
 //!
 //! A chaos round runs three of those passes back to back, one after the other, so
 //! the four change places three times over before an answer is asked for.
@@ -204,9 +206,10 @@ fn placement(rng: &mut Rng) -> (f32, f32) {
 /// way, remembering where they started.
 ///
 /// Each of them is given a row of its own to walk through, so the four are never at
-/// the same depth while they shuffle. Every leg changes the slot or the depth and
-/// never both, so the walk is a set of sideways and forward steps rather than a
-/// diagonal slide.
+/// the same depth while they shuffle. A normal round changes the slot or the depth on
+/// each leg and never both, so the walk is a set of sideways and forward steps rather
+/// than a diagonal slide; a chaos round is allowed to step diagonally into and out of
+/// its row, while the crossing itself still happens at its own depth.
 ///
 /// One of the four — a different one each pass — keeps the place it is standing in
 /// and walks no further than its row: it steps out of its slot into that row and back
@@ -230,7 +233,7 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
     let mut filled = 0;
 
     for pass in 0..mode.shuffle_passes() {
-        let steps = shuffle_pass(&current, rng);
+        let steps = shuffle_pass(&current, rng, mode);
         // From the second pass on, its first place is where the previous one ended.
         let first_leg = if pass == 0 { 0 } else { 1 };
 
@@ -257,9 +260,16 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
 
 /// One pass of a round, from the places the four stand in to the places they end the
 /// pass in.
+///
+/// A normal pass moves along one axis at a time. A chaos pass is allowed to move
+/// diagonally: the step into the row and the step out of it both change the slot too.
+/// The three crossing steps stay at the character's own row, and every character
+/// enters, crosses and leaves at the same moments, so the four still hold four
+/// different depths throughout.
 fn shuffle_pass(
     current: &[Spot; layout::ANSWER_COUNT],
     rng: &mut Rng,
+    mode: Mode,
 ) -> [[Spot; LEGS]; layout::ANSWER_COUNT] {
     // The one that keeps its place, and the three that carry on without it.
     let standing = rng.below(layout::ANSWER_COUNT);
@@ -294,19 +304,27 @@ fn shuffle_pass(
         let destination = (destinations[index], layout::STAND_ROW);
         // Into its own row for the walk — one of the four crosses the front of the
         // stage there, a quarter larger than they stand, while the others step upstage
-        // of themselves — across that row twice behind the others, and back to standing
-        // depth in the new slot. The waypoints avoid both the slot it starts in and the
-        // one it is headed for, so every sideways leg really does cross the stage.
+        // of themselves — across that row, and back to standing depth in the new slot.
+        // The waypoints avoid the slot it is heading for, so every sideways leg really
+        // does cross the stage.
         let row = rows[index];
-        let away = (start.0, row);
 
         if index == standing {
             // Nothing to cross: it steps out of its slot into its row and back into it,
             // waiting there while the others cross. The places it is already at are
             // repeated because every path has the same shape, and that wait is what
             // keeps it at its own depth while the other three are in theirs.
+            let away = (start.0, row);
             [start, away, away, away, away, destination]
+        } else if mode == Mode::Chaos {
+            // Diagonal entry and exit: both legs change the slot as well as the depth.
+            let entry = waypoint(row, &[start.0, destination.0], rng);
+            let first = waypoint(row, &[entry.0, destination.0], rng);
+            let second = waypoint(row, &[first.0, destination.0], rng);
+            let exit = waypoint(row, &[second.0, destination.0], rng);
+            [start, entry, first, second, exit, destination]
         } else {
+            let away = (start.0, row);
             let first = waypoint(row, &[start.0, destination.0], rng);
             let second = waypoint(row, &[first.0, destination.0], rng);
             [
@@ -622,9 +640,9 @@ mod tests {
     use super::*;
     use crate::screens::game::rng;
 
-    /// A character is walking, not sliding: every leg changes the slot it is in or
-    /// the depth it is at, and never both at once. A leg that did would be drawn as
-    /// a diagonal slide across the stage.
+    /// A normal round is walked one axis at a time: every leg changes the slot it is
+    /// in or the depth it is at, and never both. Chaos is the mode that allows the
+    /// diagonal step (see `chaos_mode_shuffles_three_times_over`).
     #[test]
     fn a_round_walks_along_one_axis_at_a_time() {
         let mut rng = Rng::new(rng::seed(0.0));
@@ -655,8 +673,8 @@ mod tests {
     }
 
     /// Chaos mode runs three passes of the shuffle back to back, so each character
-    /// changes places three times over — and every pass still takes the four out of
-    /// their slots and back along one axis at a time.
+    /// changes places three times over — and it steps diagonally into and out of each
+    /// row, which normal mode does not.
     #[test]
     fn chaos_mode_shuffles_three_times_over() {
         // The path array is sized for the most passes a round can run.
@@ -667,13 +685,14 @@ mod tests {
         shuffle(&mut characters, &mut rng, Mode::Chaos);
 
         let mut total = 0;
+        let mut diagonal = 0;
         for character in characters {
             assert_eq!(character.spot().1, layout::STAND_ROW);
 
             let mut steps = 0;
             for leg in character.path.windows(2) {
-                assert!(leg[0].0 == leg[1].0 || leg[0].1 == leg[1].1);
                 steps += usize::from(leg[0] != leg[1]);
+                diagonal += usize::from(leg[0].0 != leg[1].0 && leg[0].1 != leg[1].1);
             }
             // Five legs a pass for the three that move, two for the one that keeps
             // its place: a character that kept it every pass takes six.
@@ -682,6 +701,7 @@ mod tests {
         }
         // Three passes of three movers and one stayer.
         assert_eq!(total, 3 * (3 * 5 + 2));
+        assert!(diagonal > 0, "a chaos round walks no diagonal legs");
     }
 
     /// One character a round keeps the place it is standing in: it walks no further
