@@ -45,32 +45,51 @@ pub const BANNER_CENTRE: (f32, f32) = (220.5, BANNER_TOP + BANNER_HEIGHT / 2.0);
 /// Characters stand in four evenly spaced slots, one above each answer button.
 pub const SLOT_PIVOT_X: f32 = 44.0;
 pub const SLOT_STEP: f32 = 104.0;
-/// Where a character's pivot sits, measured from the top of the window. It is
-/// what lands the character's feet on the stage floor at y = 208.
-pub const CHARACTER_PIVOT_Y: f32 = 121.0;
-/// The row the characters stand in: the front of the stage, where
-/// [`CHARACTER_PIVOT_Y`] puts their feet on the floor. The game lines all four of
-/// them up there — at the reveal, and again for the picks — so the rows behind it
-/// are only ever walked through.
-pub const FRONT_ROW: usize = 0;
-/// How far upstage each further row stands: the stage is drawn in perspective, so
-/// a row back is also higher up the window.
+/// Where a character's pivot sits when it stands at [`STAND_ROW`], measured from the
+/// top of the window. It is what lands the character's feet on the stage floor at
+/// y = 208, at the size the four of them stand (see [`DEPTH_SCALE`]).
 ///
-/// The step stays small because most of the distance is told by the shrinking
-/// below, and because the backdrop only leaves about 90 px of floor behind the
-/// front row: a bigger step would lift the deepest of them off the floor and onto
-/// the steps at the back of the stage.
+/// Every row further back is [`DEPTH_STEP`] higher up the window, and the front row
+/// is one step the other way, downstage.
+pub const CHARACTER_PIVOT_Y: f32 = 121.0;
+/// The front row of the stage, one step downstage of [`STAND_ROW`]: at row 0 a
+/// character is drawn a quarter larger than the four of them stand, and its feet are
+/// [`DEPTH_STEP`] lower down the window.
+///
+/// The four do not stand there, so the shuffle is what sends one of them across it.
+pub const FRONT_ROW: usize = 0;
+/// The row the four characters stand in: at the reveal, while a position is being
+/// picked, and wherever the last round left them — so all four stand at the same
+/// depth and none is in front of another.
+///
+/// The depth is measured from here: this is where a character is drawn at its own
+/// size, one row upstage of the front, which is what lets the shuffle send one of them
+/// across the front to be drawn larger than the rest.
+pub const STAND_ROW: usize = 1;
+/// How far upstage each further row stands: the stage is drawn in perspective, so a
+/// row back is also higher up the window.
+///
+/// The step stays small because most of the distance is told by the shrinking below,
+/// and because the backdrop only leaves so much floor: a bigger step would lift the
+/// deepest of them off the floor and onto the steps at the back of the stage.
 pub const DEPTH_STEP: f32 = 9.0;
-/// How much smaller a character is drawn for each row further back — a fifth a row,
-/// so the deepest of the four is two fifths the size of the one in front.
+/// How much bigger or smaller a character is drawn for each row away from the one the
+/// four of them stand at — a fifth a row, down to half that size at the deepest row
+/// they walk through.
 ///
 /// It sounds like a lot, and it is on purpose: while the masks are on the four are
 /// identical, so their size and their height are all that tells them apart when
 /// their paths cross.
 pub const DEPTH_SCALE: f32 = 0.8;
-/// The row each character is sent through by a shuffle: every row behind the front
-/// one, one each, so no two of them are ever at the same depth on the way.
-pub const WALK_ROWS: [usize; ANSWER_COUNT] = [1, 2, 3, 4];
+/// The row each character is sent through by a shuffle: the front of the stage and
+/// the three deepest rows, one each, so no two of them are ever at the same depth on
+/// the way.
+///
+/// None of them is [`STAND_ROW`], which is what keeps the step into the walk and the
+/// step back out of it real moves rather than a character pausing in place. The
+/// front row is in the list on purpose: it is where one of the four is drawn at full
+/// size while it crosses.
+pub const WALK_ROWS: [usize; ANSWER_COUNT] = [FRONT_ROW, 2, 3, 4];
 /// A character's drawing is centred this far right of and below its pivot, i.e.
 /// on its body. It is what turns a slot's pivot into the point a character is
 /// centred on.

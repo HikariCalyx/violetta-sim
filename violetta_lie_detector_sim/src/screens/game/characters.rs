@@ -6,12 +6,22 @@
 //! the same spot and the animation does not shake.
 //!
 //! A character stands in a *slot* (left to right) and a *row* (front to back). It
-//! stands in the front row and in a slot of its own, so the four of them are
-//! lined up across the stage and never overlap. A round sends each of them back
-//! into a row of its own — one per depth, so no two are ever the same distance
-//! from the camera — across the stage up there, and forward again into a new slot.
-//! That is what keeps them apart on the way: the masks make them identical, so
-//! otherwise two crossing paths are impossible to tell apart.
+//! stands in `layout::STAND_ROW` — one row upstage of the front — and in a slot of
+//! its own, so the four of them are lined up across the stage and never overlap. None
+//! of them is placed exactly on the centre of its slot either: each is given a small
+//! random offset, so the line they stand in is placed rather than drawn. A
+//! round sends each of them into a row of its own — one per depth, so no two are
+//! ever the same distance from the camera — across the stage up there, and back to
+//! standing depth in a new slot. That is what keeps them apart on the way: the masks
+//! make them identical, so otherwise two crossing paths are impossible to tell
+//! apart. One of those rows is the front of the stage itself, so a round always sends
+//! one of the four across it, drawn a quarter larger than the four of them stand.
+//!
+//! Every leg of that walk goes along one axis: a character steps straight back,
+//! crosses sideways in its row, and steps straight forward again. A leg that
+//! changed slot and depth at once would read as sliding across the stage rather
+//! than as walking it. One of the four does not cross anything at all — it keeps its
+//! slot and only steps out of it into its row and back.
 //!
 //! The walk cycle is shared — `npcCommon.move` — and shows the character from
 //! behind, walking away, so one cycle serves every direction of travel.
@@ -43,12 +53,15 @@ pub enum Pose {
 /// One of the characters on the stage.
 ///
 /// Where it stands is the last place on its path: every round sends it through a
-/// couple of places on the way, so it crosses the stage in a few directions
-/// instead of sliding straight to its new spot.
+/// couple of places on the way, so it crosses the stage sideways instead of sliding
+/// straight to its new spot.
 #[derive(Debug, Clone, Copy)]
 pub struct Character {
     /// Whether this is the one the player has to keep track of.
     pub special: bool,
+    /// How far off the centre of its slot it is placed, in window pixels, which stays
+    /// the same for the whole game.
+    pub offset: (f32, f32),
     /// The places it walks through this round, first to last. Outside a walk they
     /// are all the same place.
     pub path: [Spot; LEGS],
@@ -58,8 +71,20 @@ pub struct Character {
 pub type Spot = (usize, usize);
 
 /// How many places describe a character's walk, counting where it starts: a round
-/// moves it along three legs, changing direction twice.
-pub const LEGS: usize = 4;
+/// moves it along five legs — straight back into its row, three across that row,
+/// and straight forward into its new place.
+pub const LEGS: usize = 6;
+
+/// How far to either side of the centre of its slot a character may be placed, and how
+/// far above or below it, in window pixels.
+///
+/// The game does not line the four of them up exactly, so neither does this: the four
+/// offsets are what keep the line of them from reading as a row of sprites. They stay
+/// well inside a slot — a fifth of one at most — and smaller in height than in width,
+/// because the row already tells the vertical distance and a character off its row's
+/// height by much would read as floating.
+const OFFSET_X: f32 = 8.0;
+const OFFSET_Y: f32 = 4.0;
 
 /// The rectangle drawn around the character the pointer is over, so it is obvious
 /// which one a click would choose.
@@ -78,7 +103,7 @@ impl Character {
 
     /// Where and how big it is drawn when it is not walking.
     pub fn stance(&self) -> Stance {
-        stance(self.spot())
+        placed(stance(self.spot()), self.offset)
     }
 }
 
@@ -92,13 +117,16 @@ pub struct Stance {
 
 /// Where a character standing in `spot` has its pivot.
 ///
-/// Row 0 is the front of the stage, where the fitted `CHARACTER_PIVOT_Y` puts the
-/// character's feet on the floor; each row further back is upstage, i.e. into the
-/// background.
+/// The row the four stand in ([`layout::STAND_ROW`]) is the one [`CHARACTER_PIVOT_Y`]
+/// is fitted for, where their feet are on the floor. A row further back is upstage,
+/// i.e. into the background and up the window; the front row is one step the other
+/// way, downstage and lower down the window.
 pub fn anchor(spot: Spot) -> (f32, f32) {
+    let distance = layout::STAND_ROW as i32 - spot.1 as i32;
+
     (
         layout::slot_pivot_x(spot.0),
-        layout::CHARACTER_PIVOT_Y - spot.1 as f32 * layout::DEPTH_STEP,
+        layout::CHARACTER_PIVOT_Y + distance as f32 * layout::DEPTH_STEP,
     )
 }
 
@@ -110,23 +138,36 @@ fn stance(spot: Spot) -> Stance {
     }
 }
 
-/// How much smaller a character in `row` is drawn. The stage is painted in
-/// perspective, so a character further back is both higher up the window and
-/// smaller, which is what makes walking upstage read as leaving the foreground.
-fn scale_of(row: usize) -> f32 {
-    layout::DEPTH_SCALE.powi(row as i32)
+/// `stance` moved by `offset`: the difference between where a slot puts a character
+/// and where it has been placed in it.
+fn placed(mut stance: Stance, offset: (f32, f32)) -> Stance {
+    stance.anchor.0 += offset.0;
+    stance.anchor.1 += offset.1;
+    stance
 }
 
-/// Spawns the four characters: one of them special, one to a slot, all of them in
-/// the front row where they can be seen.
+/// How much bigger or smaller a character in `row` is drawn than the four of them
+/// stand.
+///
+/// The stage is painted in perspective, so a character further back is both higher up
+/// the window and smaller, which is what makes walking upstage read as leaving the
+/// foreground — and the one sent across the front row is drawn larger than they stand,
+/// which is what makes stepping downstage read as coming into it.
+fn scale_of(row: usize) -> f32 {
+    layout::DEPTH_SCALE.powi(row as i32 - layout::STAND_ROW as i32)
+}
+
+/// Spawns the four characters: one of them special, one to a slot, all of them at
+/// the depth they stand at (`layout::STAND_ROW`), lined up where they can be seen.
 pub fn spawn(rng: &mut Rng) -> [Character; layout::ANSWER_COUNT] {
     let mut slots: [usize; layout::ANSWER_COUNT] = std::array::from_fn(|index| index);
     rng.shuffle(&mut slots);
 
     let mut characters = std::array::from_fn(|index| {
-        let spot = (slots[index], layout::FRONT_ROW);
+        let spot = (slots[index], layout::STAND_ROW);
         Character {
             special: false,
+            offset: placement(rng),
             path: [spot; LEGS],
         }
     });
@@ -134,22 +175,51 @@ pub fn spawn(rng: &mut Rng) -> [Character; layout::ANSWER_COUNT] {
     characters
 }
 
-/// Sends every character walking to a new place, through a couple of random ones
-/// on the way, remembering where it started.
+/// How far off the centre of its slot a character is placed: a little to one side of
+/// it, and a little above or below, both drawn fresh for every game.
+fn placement(rng: &mut Rng) -> (f32, f32) {
+    let spread = |rng: &mut Rng, reach: f32| (rng.fraction() * 2.0 - 1.0) * reach;
+
+    (spread(rng, OFFSET_X), spread(rng, OFFSET_Y))
+}
+
+/// Sends the characters walking to new places, through a couple of random ones on the
+/// way, remembering where they started.
 ///
-/// Each of them is given a row of its own to walk through, so the four are never
-/// at the same depth while they shuffle. A character that is handed its own place
-/// back is sent walking anyway, out to its waypoints and back: it ends up where it
-/// started, but it does not stand still in plain sight of the player.
+/// Each of them is given a row of its own to walk through, so the four are never at
+/// the same depth while they shuffle. Every leg changes the slot or the depth and
+/// never both, so the walk is a set of sideways and forward steps rather than a
+/// diagonal slide.
+///
+/// One of the four — a different one each round — keeps the place it is standing in
+/// and walks no further than its row: it steps out of its slot into that row and back
+/// into it, crossing nothing. The other three swap among the places that are left, so
+/// it is the one character the player can follow without taking their eyes off the
+/// rest.
 pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng) {
-    let mut slots: [usize; layout::ANSWER_COUNT] =
-        std::array::from_fn(|index| characters[index].spot().0);
+    // The one that keeps its place, and the three that carry on without it.
+    let standing = rng.below(layout::ANSWER_COUNT);
+    let moving: [usize; layout::ANSWER_COUNT - 1] =
+        std::array::from_fn(|index| if index < standing { index } else { index + 1 });
+
+    let mut slots: [usize; layout::ANSWER_COUNT - 1] =
+        std::array::from_fn(|index| characters[moving[index]].spot().0);
     rng.shuffle(&mut slots);
 
-    // A shuffle can hand every character its own place back. Nothing would move
-    // then, so shift the slots along by one instead.
-    if (0..layout::ANSWER_COUNT).all(|index| slots[index] == characters[index].spot().0) {
-        slots.rotate_left(1);
+    // Every one of the three has to end up somewhere else, or a round would have two
+    // characters that stayed where they were. A shuffle that leaves any of them its
+    // own place is replaced by one of the two ways of cycling all three.
+    let swapped = (0..slots.len()).all(|index| slots[index] != characters[moving[index]].spot().0);
+    if !swapped {
+        let cycle = [[1, 2, 0], [2, 0, 1]][rng.below(2)];
+        slots = cycle.map(|index| characters[moving[index]].spot().0);
+    }
+
+    // Where each character ends up, the one that keeps its place among them.
+    let mut destinations: [usize; layout::ANSWER_COUNT] =
+        std::array::from_fn(|index| characters[index].spot().0);
+    for (index, character) in moving.iter().enumerate() {
+        destinations[*character] = slots[index];
     }
 
     let mut rows = layout::WALK_ROWS;
@@ -157,14 +227,32 @@ pub fn shuffle(characters: &mut [Character; layout::ANSWER_COUNT], rng: &mut Rng
 
     for (index, character) in characters.iter_mut().enumerate() {
         let start = character.spot();
-        let destination = (slots[index], layout::FRONT_ROW);
-        // Step back into its own row — shrinking as it goes — wander across up
-        // there behind the others, and come forward into the new place at full
-        // size.
+        let destination = (destinations[index], layout::STAND_ROW);
+        // Into its own row for the walk — one of the four crosses the front of the
+        // stage there, a quarter larger than they stand, while the others step upstage
+        // of themselves — across that row twice behind the others, and back to standing
+        // depth in the new slot. The waypoints avoid both the slot it starts in and the
+        // one it is headed for, so every sideways leg really does cross the stage.
         let row = rows[index];
-        let first = waypoint(row, &[start.0, destination.0], rng);
-        let second = waypoint(row, &[first.0], rng);
-        character.path = [start, first, second, destination];
+        let away = (start.0, row);
+
+        character.path = if index == standing {
+            // Nothing to cross: it steps out of its slot into its row and back into
+            // it. The places it is already at are repeated because every path has the
+            // same shape; `walked` does not spend time on a leg that goes nowhere.
+            [start, away, away, away, away, destination]
+        } else {
+            let first = waypoint(row, &[start.0, destination.0], rng);
+            let second = waypoint(row, &[first.0, destination.0], rng);
+            [
+                start,
+                away,
+                first,
+                second,
+                (destination.0, row),
+                destination,
+            ]
+        };
     }
 }
 
@@ -218,7 +306,10 @@ fn waypoint(row: usize, avoid: &[usize], rng: &mut Rng) -> Spot {
     }
     // The stage is small, so a couple of tries always find a spare slot; this is
     // only a guard against looping forever if it ever does not.
-    ((avoid[0] + 1) % layout::ANSWER_COUNT, row)
+    let slot = (0..layout::ANSWER_COUNT)
+        .find(|slot| !avoid.contains(slot))
+        .unwrap_or(0);
+    (slot, row)
 }
 
 /// The slot the special character is standing in.
@@ -319,23 +410,45 @@ pub fn draw(
 }
 
 /// Where and how big a character is while walking: `progress` runs along the whole
-/// path, so it heads in a few different directions during one round, and its size
-/// follows the rows it walks through on the way.
+/// path, so it heads along the axes the path is built from during one round, and its
+/// size follows the rows it walks through on the way.
+///
+/// Only the legs that go somewhere are counted. Every path has the same shape, so the
+/// one that keeps its place is padded with places it is already at, and spending time
+/// on those would leave it standing still with the walk cycle running: it steps out of
+/// its slot and back over the whole walk instead.
 fn walked(character: &Character, progress: f32) -> Stance {
-    let legs = LEGS - 1;
-    let travelled = (progress * legs as f32).clamp(0.0, legs as f32);
-    let leg = (travelled as usize).min(legs - 1);
+    // The legs that go somewhere, in the order they are walked.
+    let mut steps: [(Spot, Spot); LEGS - 1] = [((0, 0), (0, 0)); LEGS - 1];
+    let mut count = 0;
+
+    for leg in character.path.windows(2) {
+        if leg[0] != leg[1] {
+            steps[count] = (leg[0], leg[1]);
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return character.stance();
+    }
+
+    let travelled = (progress * count as f32).clamp(0.0, count as f32);
+    let leg = (travelled as usize).min(count - 1);
     let part = travelled - leg as f32;
 
-    let from = stance(character.path[leg]);
-    let to = stance(character.path[leg + 1]);
-    Stance {
-        anchor: (
-            from.anchor.0 + (to.anchor.0 - from.anchor.0) * part,
-            from.anchor.1 + (to.anchor.1 - from.anchor.1) * part,
-        ),
-        scale: from.scale + (to.scale - from.scale) * part,
-    }
+    let from = stance(steps[leg].0);
+    let to = stance(steps[leg].1);
+    placed(
+        Stance {
+            anchor: (
+                from.anchor.0 + (to.anchor.0 - from.anchor.0) * part,
+                from.anchor.1 + (to.anchor.1 - from.anchor.1) * part,
+            ),
+            scale: from.scale + (to.scale - from.scale) * part,
+        },
+        character.offset,
+    )
 }
 
 /// The frame `character` is drawn with.
@@ -375,5 +488,200 @@ fn artwork_groups(special: bool) -> [&'static str; 3] {
             assets::CHARACTER_MASK_ON,
             assets::CHARACTER_MASK_OFF,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screens::game::rng;
+
+    /// A character is walking, not sliding: every leg changes the slot it is in or
+    /// the depth it is at, and never both at once. A leg that did would be drawn as
+    /// a diagonal slide across the stage.
+    #[test]
+    fn a_round_walks_along_one_axis_at_a_time() {
+        let mut rng = Rng::new(rng::seed(0.0));
+        let mut characters = spawn(&mut rng);
+
+        for round in 0..64 {
+            shuffle(&mut characters, &mut rng);
+
+            for character in characters {
+                let mut steps = 0;
+                for leg in character.path.windows(2) {
+                    let (from, to) = (leg[0], leg[1]);
+                    assert!(
+                        from.0 == to.0 || from.1 == to.1,
+                        "round {round}: {from:?} to {to:?} moves obliquely"
+                    );
+                    steps += usize::from(from != to);
+                }
+                // Even the one that keeps its place takes a step out and a step back; a
+                // path of nothing but legs that go nowhere would leave a character
+                // standing there with the walk cycle running.
+                assert!(
+                    steps >= 2,
+                    "round {round}: {character:?} takes {steps} steps"
+                );
+            }
+        }
+    }
+
+    /// One character a round keeps the place it is standing in: it walks no further
+    /// than its row, so it crosses no slots, while the other three swap among the
+    /// places that are left. Which of the four it is changes from round to round.
+    #[test]
+    fn one_character_a_round_keeps_its_own_place() {
+        let mut rng = Rng::new(rng::seed(3.0));
+        let mut characters = spawn(&mut rng);
+        let mut kept = Vec::new();
+
+        for _ in 0..64 {
+            let before: Vec<usize> = characters
+                .iter()
+                .map(|character| character.spot().0)
+                .collect();
+            shuffle(&mut characters, &mut rng);
+
+            // The four still stand one to a slot…
+            let mut after: Vec<usize> = characters
+                .iter()
+                .map(|character| character.spot().0)
+                .collect();
+            after.sort_unstable();
+            after.dedup();
+            assert_eq!(after.len(), layout::ANSWER_COUNT);
+
+            // …and exactly one of them in the slot it was already standing in.
+            let staying: Vec<usize> = (0..layout::ANSWER_COUNT)
+                .filter(|index| characters[*index].spot().0 == before[*index])
+                .collect();
+            assert_eq!(
+                staying.len(),
+                1,
+                "characters in their old slots: {staying:?}"
+            );
+
+            // That one never leaves its slot, and every other one does.
+            for (index, character) in characters.iter().enumerate() {
+                let crosses = character.path.windows(2).any(|span| span[0].0 != span[1].0);
+                assert_eq!(crosses, index != staying[0], "character {index}");
+            }
+
+            kept.push(staying[0]);
+        }
+
+        // It is not always the same one of the four.
+        kept.sort_unstable();
+        kept.dedup();
+        assert!(
+            kept.len() > 1,
+            "the same character kept its place every round"
+        );
+    }
+
+    /// Every character keeps a depth of its own while they shuffle, which is what
+    /// tells the four of them apart when their paths cross — and none of them walks
+    /// at the depth the four of them stand at, so no step into the walk or back out
+    /// of it is a character pausing in place.
+    #[test]
+    fn a_round_keeps_the_four_at_four_depths_of_its_own() {
+        let mut rng = Rng::new(rng::seed(1.0));
+        let mut characters = spawn(&mut rng);
+
+        for _ in 0..64 {
+            shuffle(&mut characters, &mut rng);
+
+            let mut rows: Vec<usize> = characters
+                .iter()
+                .map(|character| character.path[1].1)
+                .collect();
+            rows.sort_unstable();
+            rows.dedup();
+            assert_eq!(rows.len(), layout::ANSWER_COUNT);
+            assert!(!rows.contains(&layout::STAND_ROW));
+        }
+    }
+
+    /// One character of the four walks across the front of the stage every round,
+    /// where it is drawn at full size rather than the smaller size the four of them
+    /// stand at.
+    #[test]
+    fn a_round_sends_one_character_across_the_front_row() {
+        let mut rng = Rng::new(rng::seed(2.0));
+        let mut characters = spawn(&mut rng);
+
+        for _ in 0..64 {
+            shuffle(&mut characters, &mut rng);
+
+            let front = characters
+                .iter()
+                .filter(|character| character.path[1].1 == layout::FRONT_ROW)
+                .count();
+            assert_eq!(front, 1);
+
+            // And all four stand at the same depth between rounds, one row upstage.
+            for character in characters {
+                assert_eq!(character.spot().1, layout::STAND_ROW);
+            }
+        }
+    }
+
+    /// The four are placed a little apart rather than lined up: each one sits off the
+    /// centre of its slot, and never far enough off that two of them read as one.
+    #[test]
+    fn the_four_are_placed_a_little_apart() {
+        for seed in 0..8 {
+            let mut rng = Rng::new(rng::seed(seed as f64));
+            let characters = spawn(&mut rng);
+
+            for character in characters {
+                assert!(character.offset.0.abs() <= OFFSET_X);
+                assert!(character.offset.1.abs() <= OFFSET_Y);
+            }
+
+            // The closest two of them can come, once the offsets have moved them, is a
+            // slot apart less the two offsets.
+            for left in 0..layout::ANSWER_COUNT {
+                for right in (left + 1)..layout::ANSWER_COUNT {
+                    let apart = (characters[left].stance().anchor.0
+                        - characters[right].stance().anchor.0)
+                        .abs();
+                    assert!(
+                        apart > layout::SLOT_STEP - 2.0 * OFFSET_X,
+                        "seed {seed}: {left} and {right} are {apart} px apart"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The depth is measured from the row the four stand at, so that is where they are
+    /// drawn at their own size with their feet on the floor; the front row is a quarter
+    /// larger and lower down the window, and the rows they walk deeper are smaller and
+    /// higher up.
+    #[test]
+    fn the_four_are_drawn_at_their_own_size() {
+        assert_eq!(scale_of(layout::STAND_ROW), 1.0);
+        assert_eq!(anchor((0, layout::STAND_ROW)).1, layout::CHARACTER_PIVOT_Y);
+
+        let front = scale_of(layout::FRONT_ROW);
+        assert!(
+            (front - 1.25).abs() < 0.001,
+            "the front row is drawn at {front}"
+        );
+        assert!(anchor((0, layout::FRONT_ROW)).1 > layout::CHARACTER_PIVOT_Y);
+
+        for row in layout::WALK_ROWS {
+            if row > layout::STAND_ROW {
+                assert!(
+                    scale_of(row) < 1.0,
+                    "row {row} is drawn at {}",
+                    scale_of(row)
+                );
+                assert!(anchor((0, row)).1 < layout::CHARACTER_PIVOT_Y);
+            }
+        }
     }
 }
