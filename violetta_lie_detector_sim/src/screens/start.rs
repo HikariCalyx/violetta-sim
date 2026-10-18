@@ -2,8 +2,8 @@
 //! into the game, and the credit for the photograph.
 
 use egui::{
-    Align, Align2, Area, Button, CentralPanel, Color32, CornerRadius, Frame, Id, Layout, Margin,
-    Rect, RichText, Ui, Vec2, pos2,
+    Align, Align2, Area, Button, CentralPanel, Color32, CornerRadius, CursorIcon, Frame, Id, Image,
+    Layout, Margin, Rect, RichText, Ui, Vec2, pos2,
 };
 
 use crate::assets::{self, Textures};
@@ -23,6 +23,21 @@ const REPOSITORY: &str = "https://github.com/HikariCalyx/violetta-sim";
 const REPOSITORY_ICON: f32 = 22.0;
 /// How far the icon button sits from the top-right corner of the screen.
 const REPOSITORY_MARGIN: f32 = 10.0;
+
+/// The sibling simulator the artwork button in the top-left corner opens.
+const FIGURE_TRACKING: &str = "https://hikaricalyx.github.io/figure-tracking-sim";
+/// How far the artwork button sits from the top-left corner of the screen.
+const FIGURE_TRACKING_MARGIN: f32 = 10.0;
+/// The size of the artwork button's plate.
+const FIGURE_TRACKING_BUTTON: f32 = 40.0;
+/// How large the artwork is drawn inside that plate. It is smaller than the plate
+/// because the artwork is a framed dialog already, so it is an icon rather than
+/// the button's whole surface.
+const FIGURE_TRACKING_ICON: f32 = 34.0;
+/// The even margin the artwork leaves around itself inside the plate, so that 34 px
+/// of artwork still lands on a 40 px button (a `Button`'s own padding is 4 px at
+/// the sides and 1 px above and below, which would widen it to 42 px).
+const FIGURE_TRACKING_PADDING: f32 = 3.0;
 
 /// The English name of the second button, which a language without a name of its
 /// own keeps.
@@ -71,6 +86,7 @@ pub fn show(ui: &mut Ui, textures: &mut Textures) -> Option<Mode> {
 
     draw_credit(ui);
     draw_repository(ui);
+    draw_figure_tracking(ui, textures);
 
     chosen
 }
@@ -121,6 +137,39 @@ fn draw_repository(ui: &Ui) {
             let response = ui.add(button).on_hover_text(REPOSITORY);
             if response.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(REPOSITORY));
+            }
+        });
+}
+
+/// The button to the figure-tracking simulator, in the top-left corner.
+///
+/// It wears the same translucent plate as the repository icon button in the
+/// opposite corner, with that project's standby dialog drawn smaller than the
+/// plate as the icon.
+fn draw_figure_tracking(ui: &Ui, textures: &mut Textures) {
+    Area::new(Id::new("figure-tracking-link"))
+        .anchor(
+            Align2::LEFT_TOP,
+            Vec2::new(FIGURE_TRACKING_MARGIN, FIGURE_TRACKING_MARGIN),
+        )
+        .show(ui.ctx(), |ui| {
+            let Some(artwork) = textures.get(ui.ctx(), assets::FIGURE_TRACKING_BUTTON) else {
+                return;
+            };
+
+            ui.spacing_mut().button_padding = Vec2::splat(FIGURE_TRACKING_PADDING);
+
+            let icon = Image::new(&artwork.texture).max_size(Vec2::splat(FIGURE_TRACKING_ICON));
+            let button = Button::image(icon)
+                .min_size(Vec2::splat(FIGURE_TRACKING_BUTTON))
+                .fill(Color32::from_black_alpha(0xa0))
+                .corner_radius(CornerRadius::same(4));
+            let response = ui
+                .add(button)
+                .on_hover_text(FIGURE_TRACKING)
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if response.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(FIGURE_TRACKING));
             }
         });
 }

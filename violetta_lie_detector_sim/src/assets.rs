@@ -84,6 +84,9 @@ pub const STANDBY_DIGIT: &str = "lieDetectorStandBy.number";
 /// credits. It is not pixel art: it is scaled to cover the screen, so it is drawn
 /// with linear filtering rather than with the nearest-neighbour the sprites use.
 pub const START_BACKGROUND: &str = "bg";
+/// The artwork of the title screen's button to the figure-tracking simulator: the
+/// standby dialog of that project, which the sibling simulator uses as its icon.
+pub const FIGURE_TRACKING_BUTTON: &str = "figureTrackingLieDetector.stanby.backgrnd";
 
 /// The languages `Resources/` carries artwork for — a directory per language, named
 /// as a two-letter code. What each language replaces is in [`LANGUAGE_SPRITES`],
